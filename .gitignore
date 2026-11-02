@@ -31,3 +31,11 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# The program built here
+/altesp
+
+
+# Build output
+bin/
+*.syso

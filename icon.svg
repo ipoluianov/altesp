@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- The same drawing as appicon.Image: an orange tile with a white chip,
+       four pins on each side, and a flash bolt in the orange of the tile -->
+  <rect x="8" y="8" width="240" height="240" rx="48" fill="#e0532f"/>
+  <path d="M84 72h88a12 12 0 0 1 12 12v88a12 12 0 0 1-12 12H84a12 12 0 0 1-12-12V84a12 12 0 0 1 12-12z
+           M83 46h12v26H83zM109 46h12v26h-12zM135 46h12v26h-12zM161 46h12v26h-12z
+           M83 184h12v26H83zM109 184h12v26h-12zM135 184h12v26h-12zM161 184h12v26h-12z
+           M46 83h26v12H46zM46 109h26v12H46zM46 135h26v12H46zM46 161h26v12H46z
+           M184 83h26v12h-26zM184 109h26v12h-26zM184 135h26v12h-26zM184 161h26v12h-26z" fill="#ffffff"/>
+  <path d="M138 84L100 136h24l-10 36 42-56h-24z" fill="#e0532f"/>
+</svg>

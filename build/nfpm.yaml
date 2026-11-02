@@ -1,0 +1,44 @@
+# The config of nfpm for the .deb and .rpm packages, used by _build.sh/_build.bat.
+# The paths are relative to the root of the repo; ${...} comes from the environment.
+# nfpm doesn't expand variables in src, so the binary is staged in bin/.pkg/.
+name: altesp
+arch: ${PKG_ARCH}
+platform: linux
+version: ${PKG_VERSION}
+section: electronics
+priority: optional
+maintainer: Ivan Poluianov <ipoluyanov@gmail.com>
+description: AltEsp - flash and explore ESP32 boards, simple outside, powerful inside.
+homepage: https://github.com/ipoluianov/altesp
+license: MIT
+
+contents:
+  - src: bin/.pkg/altesp
+    dst: /usr/bin/altesp
+    file_info:
+      mode: 0755
+  - src: build/altesp.desktop
+    dst: /usr/share/applications/altesp.desktop
+    file_info:
+      mode: 0644
+  - src: icon.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/altesp.svg
+    file_info:
+      mode: 0644
+  - src: icon.png
+    dst: /usr/share/icons/hicolor/256x256/apps/altesp.png
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: build/postinstall.sh
+  preremove: build/preremove.sh
+
+# nui loads these with dlopen at run time; only libX11 is required
+overrides:
+  deb:
+    depends: [libx11-6]
+    recommends: [libxext6, libxinerama1, libfreetype6]
+  rpm:
+    depends: [libX11]
+    recommends: [libXext, libXinerama, freetype]

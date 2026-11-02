@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AltEsp
+Comment=Flash and explore ESP32 boards
+Exec=altesp
+Icon=altesp
+Terminal=false
+Categories=Development;Electronics;Utility;
+Keywords=esp32;esp;flash;firmware;uart;serial;espressif;
+StartupNotify=false

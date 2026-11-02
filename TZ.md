@@ -274,26 +274,34 @@ altesp monitor --port COM5 --elf build/app.elf
 
 ## Code structure inside the application
 
-One repository, one Go module, one binary; no external library. Order is maintained by packages in `internal/` — they are not visible or used from outside.
+One repository, one Go module, one binary. The top level follows the layout of the other AltBins utilities (AltSerialPort as the model); the ESP-specific code lives in `internal/` — those packages are not visible or used from outside.
 
 ```
 altesp/
   main.go          — mode selection: window or command line
+  uninstall.go     — removal of the installed program
+  icon.png, icon.svg
+  app/             — name, version, website
+  config/          — settings in ~/.altbins/.altesp
+  install/         — installation from the Install link
+  forms/           — window, tabs, context menus, strings
+  cli/             — console mode commands, local API/MCP
+  appicon/, cmd/mkicon/  — the program icon
+  build/, scripts/ — builds and packages
   internal/
-    serial/        — ports, VID/PID on every OS, DTR/RTS sequences,
+    serial/        — ports, VID/PID on every OS, DTR/RTS,
                      exclusive open, tracking ports that reappear
-    loader/        — SLIP, ROM loader and stub commands, compression
+    loader/        — SLIP, ROM loader and stub commands, compression,
+                     reset sequences, a simulated loader for tests
     jtag/          — USB access and debug modules (stages 6–7)
     chips/         — chip table: detection, addresses, eFuse layouts
     formats/       — partition table, app image, NVS,
                      SPIFFS/LittleFS/FAT + wear levelling,
                      ELF/DWARF, stack unwinder, coredump
     ops/           — flashing, reading, comparison, eFuse
-    ui/            — window, tabs, context menus
-    cli/           — console mode commands
 ```
 
-Dependency rule: `ui` and `cli` call only `ops`; `ops` uses `loader`, `jtag`, `chips`, `formats`; `loader` knows only `serial`. A new chip is an entry in `chips`, not edits all over the code.
+Dependency rule: `forms` and `cli` call only `ops` (plus `app`, `config`); `ops` uses `loader`, `jtag`, `chips`, `formats`; `loader` knows only `serial`. A new chip is an entry in `chips`, not edits all over the code.
 
 ## Development stages
 
@@ -319,6 +327,7 @@ Behavior that documentation does not settle is implemented so that the program f
 
 - [ ] Connection on Windows, macOS and Linux: VID/PID, port reappearance after reset, reset sequences for CP210x, CH340, FTDI, USB-Serial-JTAG, USB OTG.
 - [ ] ROM loader without stub: `READ_FLASH_SLOW` on chips other than ESP32; writing above 16 MB (needs a board with 32 MB flash).
+- [ ] Assumptions of the simulated board used by the tests (`internal/loader/sim.go`): the length of the ROM status (4 bytes) on every chip, the ROM's error code for an unknown command, the timings of the bridge reset (EN held 100 ms or 500 ms, GPIO0 held 50 ms).
 - [ ] eFuse writing on every declared chip (needs boards that can be sacrificed).
 - [ ] Flash encryption and Secure Download Mode handling (needs boards that can be sacrificed).
 - [ ] USB access for JTAG on all three OSes; esp-flasher-stub run over JTAG, and the own flash routine.
