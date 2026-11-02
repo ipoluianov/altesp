@@ -1,6 +1,6 @@
 // Package cli is the command line of the program: the same actions as the
-// window, for scripts and CI. The commands are recognized now; they are
-// done as the operations of the program come.
+// window, for scripts and CI. The work is done by the ops package, as in
+// the window.
 package cli
 
 import (
@@ -18,7 +18,7 @@ const usage = `Usage:
   altesp flash   [--port P] <build folder>
   altesp flash   [--port P] <address> <file> [<address> <file>...]
   altesp read    [--port P] <address> <size> <file>
-  altesp erase   [--port P]                erase the whole flash
+  altesp erase   [--port P] [<address> <size>]  the whole flash, or a region
   altesp monitor [--port P] [--elf FILE] [--reset]
   altesp version
 
@@ -30,6 +30,13 @@ Options:
       --elf FILE        decode the panics with the .elf (monitor)
       --reset           reset the board when the monitor starts
       --json            machine-readable output
+      --no-reset        leave the board in download mode afterwards
+      --no-stub         use only the ROM loader (slower, fewer functions)
+      --no-verify       don't compare the flash with the files after writing
+      --changed         write only the files that differ from the flash
+      --force           flash even when the files don't suit the board
+
+Exit codes: 0 done, 1 failed, 2 wrong command line.
 `
 
 // Exit codes
@@ -41,6 +48,12 @@ const (
 
 // commands are the commands of the console; the window has the others
 var commands = []string{"ports", "info", "flash", "read", "erase", "monitor"}
+
+// handlers run the commands
+var handlers = map[string]func(args []string, e env) int{
+	"ports": cmdPorts, "info": cmdInfo, "flash": cmdFlash,
+	"read": cmdRead, "erase": cmdErase, "monitor": cmdMonitor,
+}
 
 // IsCommand tells whether the arguments ask for the command line, not the
 // window
@@ -85,12 +98,8 @@ func run(args []string, e env) int {
 		fmt.Fprintf(e.stdout, "%s %s\n", app.DisplayName, app.Version)
 		return exitOK
 	}
-	for _, c := range commands {
-		if args[0] == c {
-			// TODO: the commands call the operations of the program
-			fmt.Fprintf(e.stderr, "altesp: %s: not implemented yet\n", c)
-			return exitUsage
-		}
+	if cmd, ok := handlers[args[0]]; ok {
+		return cmd(args[1:], e)
 	}
 	return usageError(e, fmt.Errorf("unknown command %s", args[0]))
 }

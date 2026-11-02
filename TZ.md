@@ -323,11 +323,17 @@ Stage 1 starts with the connection layer, since everything else depends on it: V
 
 ## Hardware checks
 
-Behavior that documentation does not settle is implemented so that the program finds out on the board itself and falls back gracefully. These points are then confirmed on real boards:
+Behavior that documentation does not settle is implemented so that the program finds out on the board itself and falls back gracefully. These points are then confirmed on real boards. The read-only tests in `internal/loader/hw_test.go` run against a board when `ALTESP_HW_PORT` and `ALTESP_HW_STUB` are set; `ALTESP_TRACE=1` prints every packet.
 
-- [ ] Connection on Windows, macOS and Linux: VID/PID, port reappearance after reset, reset sequences for CP210x, CH340, FTDI, USB-Serial-JTAG, USB OTG.
-- [ ] ROM loader without stub: `READ_FLASH_SLOW` on chips other than ESP32; writing above 16 MB (needs a board with 32 MB flash).
-- [ ] Assumptions of the simulated board used by the tests (`internal/loader/sim.go`): the length of the ROM status (4 bytes) on every chip, the ROM's error code for an unknown command, the timings of the bridge reset (EN held 100 ms or 500 ms, GPIO0 held 50 ms).
+**Checked on an ESP32 v3.1 dev board (CP2102 bridge, Linux, ESP-AT firmware built with ESP-IDF v3.0.3), Nov 2, 2026:** bridge reset into download mode and into the application; ROM status of 4 bytes; chip detection by the magic word 0x00F01D83; MAC, revision, crystal and flash JEDEC ID through registers; esp-flasher-stub v1.4.1 start, baud change to 921600; partition table found; an application without a description (built before ESP-IDF v3.3) recognized. Through the stub: full 4 MB read (56 s) with its MD5; compressed writes verified by MD5 and read back; "only changed" skipping; region erase; whole flash erase (11 s); restore of the 4 MB backup (22 s) after which the board booted. Through the ROM loader alone: compressed write with the MD5 as hex text, region erase by FLASH_BEGIN, the slow READ_FLASH_SLOW read. The monitor showed the boot log after a reset. Found there: after a baud rate change, READ_FLASH with 4 KB packets stalled after a few packets until another frame came (the stub didn't see an acknowledgement); with 1 KB packets it didn't. Reading uses 1 KB packets and resumes a stalled read; the cause is not found yet.
+
+- [ ] Connection on Windows and macOS; on Linux with CH340, FTDI, USB-Serial-JTAG, USB OTG: VID/PID, port reappearance after reset, reset sequences.
+- [ ] The READ_FLASH stall: the cause, other chips and adapters, whether resuming is ever needed with 1 KB packets.
+- [ ] ROM loader without stub: `READ_FLASH_SLOW` on chips other than ESP32 (works on the ESP32); writing above 16 MB (needs a board with 32 MB flash).
+- [ ] Assumptions of the simulated board used by the tests (`internal/loader/sim.go`): the length of the ROM status on chips other than ESP32, the ROM's error code for an unknown command, the timings of the bridge reset (EN held 100 ms or 500 ms, GPIO0 held 50 ms).
+- [ ] Chip table (`internal/chips`), marked `unverified:` in the code: the magic word of the ESP32-S2 (0x000007C6); the bit positions of the GET_SECURITY_INFO flags; the SPI user-command sequence for the flash ID on chips other than ESP32; JEDEC capacity codes 0x20–0x22; in-package memory of ESP32-PICO-D4 and ESP32-PICO-V3-02.
+- [ ] Formats (`internal/formats`): finding `esp_bootloader_desc_t`; detecting signed images (Secure Boot v1 and v2 signature blocks); otadata entries with `ota_seq` 0; FAT under wear levelling; SPIFFS other than 256-byte pages and 4 KB blocks; real Arduino IDE 2 and PlatformIO (pioarduino, P4/C5) build folders.
+- [ ] Flashing (writing) on real boards of every declared chip but the ESP32, with verification.
 - [ ] eFuse writing on every declared chip (needs boards that can be sacrificed).
 - [ ] Flash encryption and Secure Download Mode handling (needs boards that can be sacrificed).
 - [ ] USB access for JTAG on all three OSes; esp-flasher-stub run over JTAG, and the own flash routine.

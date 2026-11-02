@@ -37,6 +37,10 @@ type SimBoard struct {
 	AppLog string
 	// NoStub: the stub never says OHAI
 	NoStub bool
+	// ReadStallAfter makes READ_FLASH stall after that many packets, as
+	// the stub on an ESP32 did: the acknowledgements are not seen until a
+	// frame of another length comes, which ends the read
+	ReadStallAfter int
 }
 
 type simMode int
@@ -83,6 +87,8 @@ type Sim struct {
 	readAddr, readEnd uint32
 	readPacket        uint32
 	readDigest        []byte
+	readSent          int
+	readStalled       bool
 
 	// Commands counts the commands received, by opcode
 	Commands map[byte]int
@@ -447,6 +453,7 @@ func (s *Sim) handle(p []byte) {
 		s.reply(op, 0, nil, true, 0)
 		sum := md5.Sum(s.board.Flash[addr : addr+n])
 		s.reading, s.readAddr, s.readEnd, s.readPacket, s.readDigest = true, addr, addr+n, packet, sum[:]
+		s.readSent, s.readStalled = 0, false
 		s.readNext()
 	default:
 		s.fail(op, 0x05)
@@ -461,15 +468,30 @@ func (s *Sim) readNext() {
 		s.reading = false
 		return
 	}
+	if s.board.ReadStallAfter > 0 && s.readSent == s.board.ReadStallAfter && !s.readStalled {
+		s.readStalled = true
+		return
+	}
 	end := min(s.readAddr+s.readPacket, s.readEnd)
 	s.emitPacket(s.board.Flash[s.readAddr:end])
 	s.readAddr = end
+	s.readSent++
 }
 
-// readAck takes the host's acknowledgement of a READ_FLASH packet
+// readAck takes the host's acknowledgement of a READ_FLASH packet. A frame
+// of another length ends the read: the stub sends what it holds back and
+// the digest, and the frame is lost.
 func (s *Sim) readAck(p []byte) {
 	if len(p) != 4 {
+		if s.readStalled && s.readAddr < s.readEnd {
+			end := min(s.readAddr+s.readPacket, s.readEnd)
+			s.emitPacket(s.board.Flash[s.readAddr:end])
+		}
+		s.emitPacket(s.readDigest)
 		s.reading = false
+		return
+	}
+	if s.readStalled {
 		return
 	}
 	s.readNext()

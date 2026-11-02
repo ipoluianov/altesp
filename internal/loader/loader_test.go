@@ -297,3 +297,26 @@ func TestStubsEmbedded(t *testing.T) {
 		}
 	}
 }
+
+func TestReadResumesAfterStall(t *testing.T) {
+	l, sim := connect(t, SimBoard{Circuit: ResetBridge, Magic: 1, ReadStallAfter: 3, Flash: testData(1 << 20)}, bridgeInfo, Options{})
+	stub, _ := StubFor("esp32")
+	ctx := context.Background()
+	if err := l.LoadStub(ctx, stub); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.ChangeBaud(ctx, 921600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := l.ReadFlash(ctx, 0x1000, 20*readPacket+100, nil)
+	if err != nil {
+		t.Fatalf("ReadFlash: %v", err)
+	}
+	if !bytes.Equal(got, sim.FlashData()[0x1000:0x1000+20*readPacket+100]) {
+		t.Fatal("the data differs")
+	}
+	// Resumed: the whole was checked with an MD5 of the flash
+	if sim.Commands[opSPIFlashMD5] == 0 {
+		t.Fatal("no SPI_FLASH_MD5 after a resumed read")
+	}
+}

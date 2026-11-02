@@ -2,8 +2,10 @@ package loader
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -40,7 +42,9 @@ func (c *conn) readLoop() {
 		n, err := c.port.Read(buf)
 		if n > 0 {
 			c.mu.Lock()
+			before := len(c.dec.text)
 			c.dec.feed(buf[:n], func(p []byte) {
+				tracePacket("<", p)
 				select {
 				case c.packets <- p:
 				default:
@@ -49,6 +53,9 @@ func (c *conn) readLoop() {
 					c.packets <- p
 				}
 			})
+			if trace && len(c.dec.text) > before {
+				tracePacket("< text", c.dec.text[before:])
+			}
 			c.mu.Unlock()
 		}
 		if err != nil {
@@ -60,11 +67,27 @@ func (c *conn) readLoop() {
 	}
 }
 
+// trace prints every packet to stderr when ALTESP_TRACE is set, for
+// finding out what a board does
+var trace = os.Getenv("ALTESP_TRACE") != ""
+
+func tracePacket(dir string, p []byte) {
+	if !trace {
+		return
+	}
+	s := hex.EncodeToString(p)
+	if len(s) > 96 {
+		s = s[:96] + fmt.Sprintf("... (%d bytes)", len(p))
+	}
+	fmt.Fprintf(os.Stderr, "%s %s %s\n", time.Now().Format("15:04:05.000"), dir, s)
+}
+
 // ErrTimeout is a loader that didn't answer in time
 var ErrTimeout = errors.New("no answer from the chip")
 
 // send frames and writes a packet
 func (c *conn) send(p []byte) error {
+	tracePacket(">", p)
 	_, err := c.port.Write(slipEncode(p))
 	return err
 }

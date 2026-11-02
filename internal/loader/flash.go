@@ -180,43 +180,106 @@ func (l *Loader) EraseRegion(ctx context.Context, addr uint32, size int) error {
 	return err
 }
 
-// readPacket is the size of the READ_FLASH data packets (at most 4096)
-const readPacket = 0x1000
+// readPacket is the size of the READ_FLASH data packets (the stub takes
+// up to 4096). 1 KB: with 4 KB packets the stub on an ESP32 stalled after
+// a baud rate change, with 1 KB it did not, and the speed is nearly the
+// same.
+const readPacket = 0x400
 
 // readInFlight is how many packets the stub may send before an
 // acknowledgement; the stub sends one at a time anyway
 const readInFlight = 64
 
+// readRetries is how many times a stalled read is resumed
+const readRetries = 8
+
+// errStall is a READ_FLASH that stopped sending
+var errStall = errors.New("the stub stopped sending")
+
 // ReadFlash reads a region of flash. The stub reads fast and checks the
 // data with an MD5; the ROM can only read with the slow command, which not
 // every chip has.
+//
+// The stub on an ESP32 over a USB-UART bridge was seen to stop in the
+// middle of a READ_FLASH after a baud rate change: it doesn't take an
+// acknowledgement until another frame comes (see "Hardware checks" in
+// TZ.md), with 4 KB packets. Should a read stall anyway, it is ended and
+// the rest is asked for again.
 func (l *Loader) ReadFlash(ctx context.Context, addr uint32, size int, progress Progress) ([]byte, error) {
 	if !l.stub {
 		return l.readFlashSlow(ctx, addr, size, progress)
 	}
-	if _, err := l.command(ctx, opReadFlash, words(addr, uint32(size), readPacket, readInFlight), 0, defaultTimeout); err != nil {
+	data := make([]byte, 0, size)
+	resumed := false
+	for retry := 0; ; retry++ {
+		part, err := l.readOnce(ctx, addr+uint32(len(data)), size-len(data), func(done, _ int) {
+			if progress != nil {
+				progress(len(data)+done, size)
+			}
+		})
+		data = append(data, part...)
+		if err == nil && resumed {
+			// The parts before a stall had no digest: the whole is checked
+			sum, err := l.FlashMD5(ctx, addr, size)
+			if err != nil {
+				return nil, err
+			}
+			if sum != md5.Sum(data) {
+				return nil, errors.New("READ_FLASH: the data doesn't match the MD5 of the flash")
+			}
+		}
+		if err == nil {
+			return data, nil
+		}
+		if !errors.Is(err, errStall) || retry == readRetries {
+			return nil, err
+		}
+		resumed = true
+		tracePacket("resume", nil)
+		if err := l.endStalledRead(ctx); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// stallTimeout is how long a READ_FLASH packet may take: its time on the
+// line and a margin
+func (l *Loader) stallTimeout() time.Duration {
+	line := time.Duration(readPacket*10) * time.Second / time.Duration(l.baud)
+	return line + 500*time.Millisecond
+}
+
+// readOnce runs one READ_FLASH. On a stall it returns the whole packets
+// received and errStall: the stub's digest doesn't come then, and the
+// caller checks the whole read with SPI_FLASH_MD5 at the end.
+func (l *Loader) readOnce(ctx context.Context, addr uint32, size int, progress Progress) ([]byte, error) {
+	if _, err := l.command(ctx, opReadFlash, words(addr, uint32(size), uint32(readPacket), readInFlight), 0, defaultTimeout); err != nil {
 		return nil, err
 	}
 	data := make([]byte, 0, size)
 	for len(data) < size {
-		p, err := l.conn.recv(ctx, defaultTimeout)
+		p, err := l.conn.recv(ctx, l.stallTimeout())
+		if errors.Is(err, ErrTimeout) && len(data) > 0 {
+			return data, errStall
+		}
 		if err != nil {
 			return nil, fmt.Errorf("READ_FLASH at 0x%X: %w", addr+uint32(len(data)), err)
 		}
-		data = append(data, p...)
-		if len(data) > size {
-			return nil, fmt.Errorf("READ_FLASH: %d bytes more than asked", len(data)-size)
+		if len(data)+len(p) > size {
+			return nil, fmt.Errorf("READ_FLASH: %d bytes more than asked", len(data)+len(p)-size)
 		}
-		ack := make([]byte, 4)
-		binary.LittleEndian.PutUint32(ack, uint32(len(data)))
-		if err := l.conn.send(ack); err != nil {
+		data = append(data, p...)
+		if err := l.conn.send(ack(len(data))); err != nil {
 			return nil, err
 		}
 		if progress != nil {
 			progress(len(data), size)
 		}
 	}
-	p, err := l.conn.recv(ctx, defaultTimeout)
+	p, err := l.conn.recv(ctx, l.stallTimeout())
+	if errors.Is(err, ErrTimeout) {
+		return data[:len(data)-len(data)%readPacket], errStall
+	}
 	if err != nil {
 		return nil, fmt.Errorf("READ_FLASH digest: %w", err)
 	}
@@ -224,6 +287,26 @@ func (l *Loader) ReadFlash(ctx context.Context, addr uint32, size int, progress 
 		return nil, errors.New("READ_FLASH: the data doesn't match its MD5")
 	}
 	return data, nil
+}
+
+// endStalledRead gets the stub out of a stalled READ_FLASH: a frame that
+// is not a 4-byte acknowledgement ends its loop (esp-flasher-stub
+// command_handler.c). SYNC is that frame: should the stub be back in its
+// command loop already, it just answers it. What it sends meanwhile — a
+// held back packet, the digest, the answer — is dropped.
+func (l *Loader) endStalledRead(ctx context.Context) error {
+	if err := l.conn.send(request(opSync, syncPacket, 0)); err != nil {
+		return err
+	}
+	l.drain(ctx, 300*time.Millisecond)
+	return nil
+}
+
+// ack is the acknowledgement of READ_FLASH: the bytes received so far
+func ack(n int) []byte {
+	b := make([]byte, 4)
+	binary.LittleEndian.PutUint32(b, uint32(n))
+	return b
 }
 
 // slowBlock is what READ_FLASH_SLOW returns at a time

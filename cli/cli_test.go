@@ -30,8 +30,9 @@ func TestRun(t *testing.T) {
 	}{
 		{[]string{"--help"}, exitOK, "altesp flash"},
 		{[]string{"version"}, exitOK, "AltEsp"},
-		{[]string{"ports"}, exitUsage, "not implemented yet"},
-		{[]string{"flash", "--port", "COM5", "build/"}, exitUsage, "not implemented yet"},
+		{[]string{"flash"}, exitUsage, "give a build folder"},
+		{[]string{"read", "0x0", "4MB"}, exitUsage, "give an address, a size and a file"},
+		{[]string{"info", "--bogus"}, exitUsage, "flag provided but not defined"},
 		{[]string{"burn"}, exitUsage, "unknown command"},
 		{nil, exitUsage, "Usage"},
 	}

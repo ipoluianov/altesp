@@ -177,3 +177,21 @@ func runApp(ctx context.Context, l lines, r Reset) error {
 	}
 	return nil
 }
+
+// ResetToApp resets the board into its application without a loader
+// session: the monitor's "Reset" button
+func ResetToApp(ctx context.Context, l lines, r Reset) error {
+	if r == ResetAuto {
+		r = ResetBridge
+	}
+	return runApp(ctx, l, r)
+}
+
+// ResetToDownload resets the board into download mode and leaves it there:
+// the monitor's "Bootloader" button
+func ResetToDownload(ctx context.Context, l lines, r Reset) error {
+	if r == ResetAuto {
+		r = ResetBridge
+	}
+	return enterDownload(ctx, l, r, 0)
+}
