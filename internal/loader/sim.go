@@ -50,6 +50,9 @@ type SimBoard struct {
 	// the stub on an ESP32 did: the acknowledgements are not seen until a
 	// frame of another length comes, which ends the read
 	ReadStallAfter int
+	// LoseReadReg is the number of READ_REG answers lost on the line
+	// before the board answers again
+	LoseReadReg int
 }
 
 type simMode int
@@ -347,6 +350,10 @@ func (s *Sim) handle(p []byte) {
 			v = s.board.Magic
 		} else if s.board.Regs != nil {
 			v, _ = s.board.Regs.ReadReg(u32(0))
+		}
+		if s.board.LoseReadReg > 0 {
+			s.board.LoseReadReg--
+			break
 		}
 		s.reply(op, v, nil, true, 0)
 	case opWriteReg:

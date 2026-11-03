@@ -43,6 +43,7 @@ var (
 	colorWait      = themeColor{hex("#d29922"), hex("#b07a0a")}
 	colorLEDOff    = themeColor{hex("#3a3f47"), hex("#c9ced6")}
 	colorLink      = themeColor{hex("#3d8bf2"), hex("#1d6fb5")}
+	colorInfo      = themeColor{hex("#4493f8"), hex("#0969da")}
 	colorSecondary = themeColor{hex("#8b929c"), hex("#6e7781")}
 )
 

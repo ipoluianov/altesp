@@ -179,6 +179,7 @@ func EFuseRefusal(err error) ([]string, bool) {
 // devices back.
 func SimulateJTAGBoard() (end func()) {
 	flash := bytes.Repeat([]byte{0xFF}, 4<<20)
+	copy(flash, bootloaderHead(13))
 	copy(flash[0x8000:], partitionTable())
 	copy(flash[0x10000:], appHead(13, "c6-app", "3.1"))
 	sim, err := jtag.NewSim(jtag.SimBoard{Chip: "esp32c6", Flash: flash, SBA: true, MAC: [6]byte{0x40, 0x4c, 0xca, 1, 2, 3}})

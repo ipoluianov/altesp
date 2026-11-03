@@ -309,14 +309,21 @@ func flash(args json.RawMessage) (any, error) {
 		if fatal && !a.Force {
 			return nil, fmt.Errorf("not flashed: %s (force writes anyway)", strings.Join(problems, "; "))
 		}
-		if err := s.Flash(ctx, items, ops.FlashOptions{Verify: true, OnlyChanged: a.OnlyChanged}, nil); err != nil {
+		skipped := map[int]bool{}
+		opt := ops.FlashOptions{Verify: true, OnlyChanged: a.OnlyChanged, Skipped: func(i int) { skipped[i] = true }}
+		if err := s.Flash(ctx, items, opt, nil); err != nil {
 			return nil, err
 		}
-		written := []string{}
-		for _, it := range items {
-			written = append(written, fmt.Sprintf("%s at 0x%X (%s)", it.Name, it.Addr, ops.SizeText(len(it.Data))))
+		written, same := []string{}, []string{}
+		for i, it := range items {
+			line := fmt.Sprintf("%s at 0x%X (%s)", it.Name, it.Addr, ops.SizeText(len(it.Data)))
+			if skipped[i] {
+				same = append(same, line)
+			} else {
+				written = append(written, line)
+			}
 		}
-		return map[string]any{"flashed": written, "warnings": problems}, nil
+		return map[string]any{"flashed": written, "unchanged": same, "warnings": problems}, nil
 	})
 }
 

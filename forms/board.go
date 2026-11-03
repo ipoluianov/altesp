@@ -49,6 +49,19 @@ func (m *MainForm) showBoard() {
 				box.Add(cardLabel("  " + appText(a)))
 			}
 		}
+		if head, text := firmwareNotice(m.board); head != "" {
+			box.Add(fixedSpace(4))
+			// Blue: information to notice, not an error
+			h := ui.NewLabel(head)
+			h.SetFontBold(true)
+			l := ui.NewLabel(wrap(text, cardTextWidth))
+			l.SetTooltip(text)
+			for _, w := range []*ui.Label{h, l} {
+				w.SetForegroundColor(colorInfo.get())
+				ui.OnThemeChanged.Connect(func(bool) { w.SetForegroundColor(colorInfo.get()) })
+				box.Add(w)
+			}
+		}
 		for _, n := range s.Notes {
 			l := cardLabel(wrap(n, cardTextWidth))
 			l.SetForegroundColor(colorWait.get())
@@ -58,6 +71,24 @@ func (m *MainForm) showBoard() {
 	}
 	m.card.RemoveAllWidgets()
 	m.card.AddWidget(0, 0, box)
+}
+
+// firmwareNotice tells in the card that the board has no firmware to boot,
+// and what it does then: "" when there is firmware or it is unknown
+func firmwareNotice(b ops.Board) (head, text string) {
+	switch b.Firmware {
+	case ops.FirmwareEmpty:
+		loop := T().EmptyLoopUART
+		if ops.BuiltinUSB(b.Port) {
+			loop = T().EmptyLoopUSB
+		}
+		return T().NoFirmware, T().EmptyFlash + " " + loop + " " + T().DropToFlash
+	case ops.FirmwareNoTable:
+		return T().IncompleteFirmware, T().NoPartitionTable + " " + T().DropToFlash
+	case ops.FirmwareNoApp:
+		return T().IncompleteFirmware, T().NoApplication + " " + T().DropToFlash
+	}
+	return "", ""
 }
 
 // cardLabel is a line of the card: a long one is cut by the width of the
@@ -139,6 +170,7 @@ func summaryText(s ops.Summary) string {
 	line("Features", strings.Join(s.Features, ", "))
 	line("Security", strings.Join(s.Security, ", "))
 	line("Loader", s.Loader)
+	line("Firmware", s.Firmware)
 	if len(s.Partitions) > 0 {
 		b.WriteString("\nPartitions:\n")
 		for _, p := range s.Partitions {

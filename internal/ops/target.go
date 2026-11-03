@@ -116,6 +116,7 @@ func sessionOverJTAG(ctx context.Context, js *jtag.Session, d JTAGDevice) (*Sess
 	}
 	b.Notes = append(b.Notes, info.Warnings...)
 	s.readPartitions(ctx)
+	s.checkFirmware(ctx)
 	return s, nil
 }
 

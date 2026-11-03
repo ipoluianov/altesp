@@ -188,6 +188,7 @@ func printSummary(w io.Writer, s ops.Summary) {
 	row("Features", strings.Join(s.Features, ", "))
 	row("Security", strings.Join(s.Security, ", "))
 	row("Loader", s.Loader)
+	row("Firmware", s.Firmware)
 	if len(s.Partitions) > 0 {
 		fmt.Fprintln(w, "\nPartitions:")
 		for _, p := range s.Partitions {
@@ -293,7 +294,10 @@ func cmdFlash(args []string, e env) int {
 		names[i] = fmt.Sprintf("%s @0x%X", it.Name, it.Addr)
 	}
 	pl := &progressLine{w: e.stderr, names: names}
-	err = s.Flash(ctx, items, ops.FlashOptions{Verify: !o.noVerif, OnlyChanged: o.changed, Encrypt: o.encrypt}, pl.update)
+	var flashed, same []string
+	skipped := map[int]bool{}
+	err = s.Flash(ctx, items, ops.FlashOptions{Verify: !o.noVerif, OnlyChanged: o.changed, Encrypt: o.encrypt,
+		Skipped: func(i int) { skipped[i] = true }}, pl.update)
 	cerr := s.Close(context.Background(), err == nil && !o.noReset)
 	if err != nil {
 		return fail(e, err)
@@ -301,8 +305,19 @@ func cmdFlash(args []string, e env) int {
 	if cerr != nil {
 		fmt.Fprintln(e.stderr, "Warning: reset after flashing: "+cerr.Error())
 	}
-	result(e, o, map[string]any{"flashed": names}, func() {
-		fmt.Fprintf(e.stdout, "Flashed %d file(s)\n", len(items))
+	for i, n := range names {
+		if skipped[i] {
+			same = append(same, n)
+		} else {
+			flashed = append(flashed, n)
+		}
+	}
+	result(e, o, map[string]any{"flashed": flashed, "unchanged": same}, func() {
+		fmt.Fprintf(e.stdout, "Flashed %d file(s)", len(flashed))
+		if len(same) > 0 {
+			fmt.Fprintf(e.stdout, ", %d already on the board", len(same))
+		}
+		fmt.Fprintln(e.stdout)
 	})
 	return exitOK
 }

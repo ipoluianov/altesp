@@ -616,6 +616,8 @@ func (f *FlashTab) write(items []ops.Item) {
 	start := time.Now()
 	var last time.Time
 	closed := false
+	// The card after the write: the session may be closed by the reset
+	var after ops.Board
 	f.showProgress(0, T().Writing)
 	started := f.m.runWrite(func(ctx context.Context, s *ops.Session) error {
 		err := s.Flash(ctx, items, opt, func(i, done, all int) {
@@ -635,6 +637,7 @@ func (f *FlashTab) write(items []ops.Item) {
 		if err != nil {
 			return err
 		}
+		after = s.Board()
 		if resetAfter {
 			closed = true
 			return s.Close(ctx, true)
@@ -644,6 +647,8 @@ func (f *FlashTab) write(items []ops.Item) {
 		if closed {
 			f.m.setSession(nil)
 			f.m.resetAt = time.Now()
+			f.m.board = after
+			f.m.boardChanged()
 		}
 		switch {
 		case err != nil && ctxErr(err):

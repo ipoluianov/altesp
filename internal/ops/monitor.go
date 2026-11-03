@@ -19,7 +19,9 @@ const DefaultMonitorBaud = 115200
 
 // OpenMonitor opens the port of the board without resetting it: the log of
 // the running application goes on. DTR and RTS are released so that the
-// board isn't held in reset.
+// board isn't held in reset. RTS goes first: Linux raises both lines on
+// open, which the auto-reset circuit of a bridge ignores, while RTS alone
+// pulls EN low and would restart the application.
 func OpenMonitor(info serial.PortInfo, baud int) (*Monitor, error) {
 	cfg := serial.DefaultConfig()
 	if baud > 0 {
@@ -29,8 +31,8 @@ func OpenMonitor(info serial.PortInfo, baud int) (*Monitor, error) {
 	if err != nil {
 		return nil, portError(info, err)
 	}
-	p.SetDTR(false)
 	p.SetRTS(false)
+	p.SetDTR(false)
 	return &Monitor{Port: p, Info: info, reset: loader.ResetFor(info)}, nil
 }
 

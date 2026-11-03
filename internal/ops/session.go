@@ -50,8 +50,14 @@ type Board struct {
 	// EncryptionRelease: flash encryption is in release mode — the eFuse
 	// that lets the loader encrypt what it writes is burned
 	EncryptionRelease bool
+	// Firmware is what the flash tells about the firmware on it
+	Firmware Firmware
 	// Notes are things the user should know about the board, in words
 	Notes []string
+
+	// tableScanned: the start of the flash was read for the partition
+	// table; appsRead: the head of every app partition was read
+	tableScanned, appsRead bool
 }
 
 // DefaultFlashSize is assumed when the flash size can't be detected
@@ -99,9 +105,16 @@ func Connect(ctx context.Context, info serial.PortInfo, opt Options) (*Session, 
 		baud = DefaultBaud
 	}
 	var failed []int
+	retried := false
 	for {
 		opt.Baud = baud
 		s, err := connectOnce(ctx, info, opt)
+		if errors.Is(err, loader.ErrTimeout) && !errors.Is(err, errBaudUnstable) && !retried && opt.Manual == nil && ctx.Err() == nil {
+			// An answer lost while the chip was being identified (seen
+			// once on a CP2102): nothing was changed yet, connect again
+			retried = true
+			continue
+		}
 		if !errors.Is(err, errBaudUnstable) {
 			if s != nil && len(failed) > 0 {
 				s.board.Notes = append(s.board.Notes, fmt.Sprintf("%v baud was unstable: working at %d", failed, s.board.Baud))
@@ -283,6 +296,7 @@ func (s *Session) identify(ctx context.Context, opt Options, status func(string)
 		status("Reading the partition table")
 		s.readPartitions(ctx)
 	}
+	s.checkFirmware(ctx)
 	return nil
 }
 
@@ -320,6 +334,7 @@ const partitionScan = 0x10000
 // the applications. Failures leave the card without them.
 func (s *Session) readPartitions(ctx context.Context) {
 	b := &s.board
+	b.tableScanned, b.appsRead = false, false
 	size := partitionScan
 	if !b.Stub && !b.JTAG {
 		// The ROM reads 64 bytes per command: only the usual place
@@ -335,6 +350,7 @@ func (s *Session) readPartitions(ctx context.Context) {
 		if err != nil {
 			return
 		}
+		b.tableScanned = true
 		off, ok := formats.FindPartitionTable(data)
 		if !ok {
 			return
@@ -347,12 +363,14 @@ func (s *Session) readPartitions(ctx context.Context) {
 		b.Partitions, b.PartitionTableAddr = parts, off
 	}
 	b.Apps = map[string]*formats.Image{}
+	b.appsRead = true
 	for _, p := range b.Partitions {
 		if !p.IsApp() {
 			continue
 		}
 		head, err := s.t.ReadFlash(ctx, p.Offset, formats.AppHeadSize, nil)
 		if err != nil {
+			b.appsRead = false
 			continue
 		}
 		if img, ok := formats.ParseAppHead(head); ok {

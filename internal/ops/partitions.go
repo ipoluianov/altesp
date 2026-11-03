@@ -48,12 +48,13 @@ func (s *Session) readOTA(ctx context.Context) {
 }
 
 // RefreshPartitions reads the partition table and the apps again, after
-// something was written
+// something was written, and tells the firmware again
 func (s *Session) RefreshPartitions(ctx context.Context) {
 	if s.board.CanRead && !s.board.Security.FlashEncryption {
 		s.board.Partitions, s.board.Apps = nil, nil
 		s.readPartitions(ctx)
 	}
+	s.checkFirmware(ctx)
 }
 
 // partition finds a partition of the board by its name

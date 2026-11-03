@@ -112,11 +112,15 @@ func TestFlashAndVerify(t *testing.T) {
 	}
 	// Nothing changed: nothing is written again
 	before := sim.Commands[0x11]
-	if err := s.Flash(ctx, items, FlashOptions{Verify: true, OnlyChanged: true}, nil); err != nil {
+	skipped := 0
+	if err := s.Flash(ctx, items, FlashOptions{Verify: true, OnlyChanged: true, Skipped: func(int) { skipped++ }}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if sim.Commands[0x11] != before {
 		t.Fatal("unchanged files were written again")
+	}
+	if skipped != len(items) {
+		t.Fatalf("%d files told skipped, %d unchanged", skipped, len(items))
 	}
 	got, err := s.Read(ctx, 0x10000, len(app), nil)
 	if err != nil || !bytes.Equal(got, app) {
@@ -242,6 +246,31 @@ func TestBaudFallback(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no note about the fallback: %v", s.Board().Notes)
+	}
+}
+
+// TestConnectRetry: an answer lost while the chip is identified costs a
+// second connection, not a failure
+func TestConnectRetry(t *testing.T) {
+	opens := 0
+	old := openPort
+	openPort = func(serial.PortInfo) (serial.Port, error) {
+		b := c3Board()
+		if opens++; opens == 1 {
+			b.LoseReadReg = 1
+		}
+		return loader.NewSim(b), nil
+	}
+	defer func() { openPort = old }()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := Connect(ctx, c3Port, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(ctx, false)
+	if opens != 2 || s.Board().Chip == nil {
+		t.Fatalf("%d opens, chip %v", opens, s.Board().Chip)
 	}
 }
 

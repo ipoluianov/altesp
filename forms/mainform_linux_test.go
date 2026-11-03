@@ -151,6 +151,17 @@ func TestConnect(t *testing.T) {
 	w.Find("ESP32-C3")
 }
 
+// A board with an empty flash is told in the card
+func TestEmptyBoardCard(t *testing.T) {
+	m, w := newTestFormWith(t, ops.SimulateEmptyBoard)
+	connect(t, m, w)
+	w.Find("No firmware")
+	shot(t, w, "03-empty-board")
+	if !strings.Contains(summaryText(m.board.Summary()), "the flash is empty") {
+		t.Error("the report doesn't tell the empty flash")
+	}
+}
+
 // Flash connects, writes with progress, resets and shows the monitor
 func TestFlash(t *testing.T) {
 	m, w := newTestForm(t)
@@ -215,6 +226,8 @@ func TestEraseConfirm(t *testing.T) {
 	d = w.Dialog()
 	d.Click(d.Find("Erase"))
 	waitFor(t, w, "erasing", func() bool { return !m.busy && strings.HasPrefix(m.flash.progress.Text(), "Flash erased") })
+	// The card tells the board is empty now
+	w.Find("No firmware")
 }
 
 // The monitor strips the ANSI colors of ESP-IDF and tells the levels

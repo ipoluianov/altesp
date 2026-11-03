@@ -18,6 +18,10 @@ type Strings struct {
 	RecentProjects, NoProjects  string
 	FlashLabel, Crystal         string
 	OnBoard                     string
+	// The card of a board without firmware to boot
+	NoFirmware, IncompleteFirmware, EmptyFlash string
+	EmptyLoopUSB, EmptyLoopUART, DropToFlash   string
+	NoPartitionTable, NoApplication            string
 
 	// Card menu
 	CopyMAC, CopyAll, SaveReport, ResetBoard, EnterBootloader string
@@ -175,6 +179,15 @@ var english = Strings{
 	FlashLabel: "Flash",
 	Crystal:    "Crystal",
 	OnBoard:    "On board:",
+
+	NoFirmware:         "No firmware",
+	IncompleteFirmware: "Incomplete firmware",
+	EmptyFlash:         "The flash is empty: a new or erased board.",
+	EmptyLoopUSB:       "Without AltEsp connected it restarts over and over, and its USB port keeps disappearing and coming back.",
+	EmptyLoopUART:      "Without AltEsp connected it restarts over and over, printing \"invalid header\" in the monitor.",
+	DropToFlash:        "To flash it, drop a build folder on the Flash tab.",
+	NoPartitionTable:   "There is a bootloader but no partition table: the bootloader has nothing to start.",
+	NoApplication:      "The partition table has no application in it: the bootloader has nothing to start.",
 
 	CopyMAC:         "Copy MAC",
 	CopyAll:         "Copy all info",
@@ -606,6 +619,15 @@ var russian = Strings{
 	FlashLabel: "Flash",
 	Crystal:    "Кварц",
 	OnBoard:    "На плате:",
+
+	NoFirmware:         "Прошивки нет",
+	IncompleteFirmware: "Прошивка неполная",
+	EmptyFlash:         "Flash пустая: новая или стёртая плата.",
+	EmptyLoopUSB:       "Без подключения к AltEsp она перезагружается по кругу, а её USB-порт то пропадает, то появляется.",
+	EmptyLoopUART:      "Без подключения к AltEsp она перезагружается по кругу, а в мониторе повторяется «invalid header».",
+	DropToFlash:        "Чтобы прошить, перетащите папку сборки на вкладку «Прошивка».",
+	NoPartitionTable:   "Загрузчик есть, а таблицы разделов нет: загрузчику нечего запускать.",
+	NoApplication:      "В таблице разделов нет приложения: загрузчику нечего запускать.",
 
 	CopyMAC:         "Копировать MAC",
 	CopyAll:         "Копировать всё",

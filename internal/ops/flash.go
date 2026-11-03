@@ -132,6 +132,9 @@ type FlashOptions struct {
 	Verify bool
 	// OnlyChanged skips the files already on the board
 	OnlyChanged bool
+	// Skipped is told the index of each file skipped as already on the
+	// board; may be nil
+	Skipped func(index int)
 	// NoCompress sends the data as it is
 	NoCompress bool
 	// Encrypt has the chip encrypt the data as it writes it (Flash
@@ -164,6 +167,9 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 		if opt.OnlyChanged && canMD5 {
 			if got, err := s.t.FlashMD5(ctx, it.Addr, len(it.Data)); err == nil && got == want {
 				report(len(it.Data), len(it.Data))
+				if opt.Skipped != nil {
+					opt.Skipped(i)
+				}
 				continue
 			}
 		}
@@ -185,6 +191,7 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 			}
 		}
 	}
+	s.RefreshPartitions(ctx)
 	return nil
 }
 
@@ -206,6 +213,7 @@ func (s *Session) flashEncrypted(ctx context.Context, items []Item, progress Fil
 			return fmt.Errorf("%s: %w", it.Name, err)
 		}
 	}
+	s.RefreshPartitions(ctx)
 	return nil
 }
 
@@ -226,10 +234,16 @@ func (s *Session) EraseAll(ctx context.Context) error {
 	if s.board.SecureDownload {
 		return errors.New("Secure Download Mode doesn't allow erasing")
 	}
+	var err error
 	if s.board.Stub {
-		return s.t.EraseFlash(ctx)
+		err = s.t.EraseFlash(ctx)
+	} else {
+		err = s.t.EraseRegion(ctx, 0, s.board.FlashSize)
 	}
-	return s.t.EraseRegion(ctx, 0, s.board.FlashSize)
+	if err == nil {
+		s.RefreshPartitions(ctx)
+	}
+	return err
 }
 
 // Erase erases whole sectors
@@ -237,7 +251,11 @@ func (s *Session) Erase(ctx context.Context, addr uint32, size int) error {
 	if s.board.SecureDownload {
 		return errors.New("Secure Download Mode doesn't allow erasing")
 	}
-	return s.t.EraseRegion(ctx, addr, size)
+	err := s.t.EraseRegion(ctx, addr, size)
+	if err == nil {
+		s.RefreshPartitions(ctx)
+	}
+	return err
 }
 
 // slowDown lowers the rate of the serial link after a failed transfer, when

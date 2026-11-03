@@ -25,7 +25,10 @@ type Summary struct {
 	Baud       int             `json:"baud,omitempty"`
 	Partitions []PartitionLine `json:"partitions,omitempty"`
 	Apps       []AppLine       `json:"apps,omitempty"`
-	Notes      []string        `json:"notes,omitempty"`
+	// Firmware is "" when there is firmware or it is unknown: see
+	// Firmware.Text
+	Firmware string   `json:"firmware,omitempty"`
+	Notes    []string `json:"notes,omitempty"`
 }
 
 // PartitionLine is a row of the partition table
@@ -117,6 +120,7 @@ func (b Board) Summary() Summary {
 		s.Apps = append(s.Apps, AppLine{n, a.ProjectName, a.Version, a.IDFVersion, strings.TrimSpace(a.Date + " " + a.Time),
 			hex.EncodeToString(a.ELFSHA256[:]), a.SecureVersion})
 	}
+	s.Firmware = b.Firmware.Text()
 	s.Notes = b.Notes
 	return s
 }

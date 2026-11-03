@@ -139,6 +139,16 @@ func appHead(chipID uint16, project, version string) []byte {
 	return h
 }
 
+// bootloaderHead is the start of a bootloader image of the simulated
+// boards: enough for the flash not to read as erased
+func bootloaderHead(chipID uint16) []byte {
+	h := make([]byte, 24)
+	h[0], h[1], h[2] = 0xE9, 1, 2 // magic, one segment, DIO
+	binary.LittleEndian.PutUint16(h[12:], chipID)
+	binary.LittleEndian.PutUint16(h[17:], 0xFFFF)
+	return h
+}
+
 // appImage is a whole application image: appHead, the padding and the
 // checksum byte (0xEF XOR the segment data) at the end of a 16-byte block
 func appImage(chipID uint16) []byte {
@@ -157,6 +167,7 @@ func c3Board() loader.SimBoard {
 	si := make([]byte, 20)
 	binary.LittleEndian.PutUint32(si[12:], 5) // ESP32-C3
 	flash := bytes.Repeat([]byte{0xFF}, 4<<20)
+	copy(flash, bootloaderHead(5))
 	copy(flash[0x8000:], partitionTable())
 	copy(flash[0x10000:], appHead(5, "sensor-node", "1.4.2"))
 	return loader.SimBoard{Circuit: loader.ResetUSBJTAG, SecurityInfo: si, EncryptWord: true, Flash: flash,

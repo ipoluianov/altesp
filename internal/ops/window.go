@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/ipoluianov/altesp/internal/formats"
@@ -37,6 +38,14 @@ func WritePartitionsCSV(w io.Writer, parts []Partition) error {
 // alignment, the table itself covered, partitions past the flash
 func CheckPartitions(parts []Partition, tableAddr uint32, flashSize int) []string {
 	return formats.CheckPartitions(parts, tableAddr, flashSize)
+}
+
+// SimulateEmptyBoard is SimulateBoard with a new board: its flash is
+// erased
+func SimulateEmptyBoard() (end func()) {
+	b := c3Board()
+	b.Flash = bytes.Repeat([]byte{0xFF}, 4<<20)
+	return simulate(b)
 }
 
 // SimulateOTABoard is SimulateBoard with a board of two OTA slots: ota_0
