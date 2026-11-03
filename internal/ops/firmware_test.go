@@ -71,3 +71,18 @@ func TestFirmwareAfterWrites(t *testing.T) {
 		t.Fatalf("after flashing: %v", got)
 	}
 }
+
+func TestErased(t *testing.T) {
+	s, _ := connectSim(t, c3Board(), c3Port, Options{})
+	ctx := context.Background()
+	for _, c := range []struct {
+		addr uint32
+		size int
+		want bool
+	}{{0x8000, 0x1000, false}, {0x20000, 0x10000, true}, {0x10000, 0x10000, false}, {0x3FF000, 0x1000, true}} {
+		got, err := s.Erased(ctx, c.addr, c.size)
+		if err != nil || got != c.want {
+			t.Errorf("0x%X: %v %v, want %v", c.addr, got, err, c.want)
+		}
+	}
+}

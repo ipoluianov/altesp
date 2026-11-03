@@ -2,6 +2,7 @@ package forms
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,7 +22,6 @@ const (
 	tabFlash = iota
 	tabMemory
 	tabPartitions
-	tabMonitor
 )
 
 // maxRecent is the most projects in the Recent projects box
@@ -37,7 +37,9 @@ type MainForm struct {
 	status *StatusBar
 
 	portCombo  *ui.ComboBox
+	refreshBtn *ui.ToolButton
 	connectBtn *ui.Button
+	monitorBtn *ui.Button
 	toolsBtn   *ui.Button
 	menuBtn    *ui.ToolButton
 	manual     *ui.HBox
@@ -49,6 +51,8 @@ type MainForm struct {
 	memory    *MemoryTab
 	parts     *PartitionsTab
 	monitor   *MonitorPanel
+	// monWin is the monitor window while it is open
+	monWin *ui.DialogContent
 
 	// The ports in the list, in its order, and the one selected; the
 	// USB-JTAG devices of the entries named "jtag:<serial>"
@@ -67,6 +71,9 @@ type MainForm struct {
 	// resetAt is when the board was last reset into its application: a
 	// port of its own USB is then away for a moment
 	resetAt time.Time
+	// goneSince is when the port of the board connected went away; zero
+	// while it is there (see checkUnplugged)
+	goneSince time.Time
 
 	// busy: a job runs (see run); cancel stops it
 	busy   bool
@@ -74,6 +81,16 @@ type MainForm struct {
 
 	// efuse is the eFuse window shown last (for the tests)
 	efuse *efuseView
+	// guide is the ESP32 guide shown last (for the tests)
+	guide *guideView
+	// loggedErr is the error logged last: showError doesn't log it again
+	loggedErr error
+	// stateKey is the state of the board the Connect button stands for,
+	// stateAt when it last changed (see settling); connecting: a job is
+	// connecting to the board
+	stateKey   string
+	stateAt    time.Time
+	connecting bool
 	// sessMu is held while the session is used: by a job, or by the
 	// reading of the Memory tab
 	sessMu sync.Mutex
@@ -131,7 +148,16 @@ func NewMainForm() *MainForm {
 	})
 
 	m.listPortsNow()
-	m.status.AddTimer(portPoll, m.listPorts)
+	// The Connect button comes back when the state has settled
+	m.status.AddTimer(100, func() {
+		if time.Since(m.stateAt) < clickGuard+300*time.Millisecond {
+			m.showConnectButton()
+		}
+	})
+	m.status.AddTimer(portPoll, func() {
+		m.listPorts()
+		m.checkUnplugged()
+	})
 	m.showRecent()
 	m.updateState()
 	// The texts put together are made again in the new language
@@ -163,6 +189,8 @@ func (m *MainForm) topBar() ui.Widgeter {
 	row := ui.NewHBox()
 	row.SetPanelPadding(4)
 	row.Add(m.menuButton())
+	m.refreshBtn = iconButton("refresh", func() string { return T().RefreshPortsTip }, m.refreshPorts)
+	row.Add(m.refreshBtn)
 
 	m.portCombo = ui.NewComboBox()
 	m.portCombo.SetMinWidth(300)
@@ -177,6 +205,14 @@ func (m *MainForm) topBar() ui.Widgeter {
 	m.connectBtn.SetTooltipFunc(func() string { return T().ConnectTip + " (F5)" })
 	m.connectBtn.SetCanBeFocused(false)
 	row.Add(m.connectBtn)
+
+	m.monitorBtn = ui.NewButton("")
+	m.monitorBtn.SetTextFunc(func() string { return T().MonitorBtn })
+	m.monitorBtn.SetMinWidth(120)
+	m.monitorBtn.OnClick.Connect(func(ui.Widgeter) { m.openMonitor() })
+	m.monitorBtn.SetTooltipFunc(func() string { return T().MonitorTip + " (F6)" })
+	m.monitorBtn.SetCanBeFocused(false)
+	row.Add(m.monitorBtn)
 	row.AddStretch()
 
 	m.toolsBtn = ui.NewButton("")
@@ -193,6 +229,8 @@ func (m *MainForm) topBar() ui.Widgeter {
 // connectText is the text of the Connect button for the state
 func (m *MainForm) connectText() string {
 	switch {
+	case m.busy && m.connecting && m.settling():
+		return T().Connecting
 	case m.busy:
 		return T().Cancel
 	case m.sess != nil:
@@ -239,13 +277,11 @@ func (m *MainForm) center() ui.Widgeter {
 		tabFlash:      {func() string { return T().TabFlash }, m.flash},
 		tabMemory:     {func() string { return T().TabMemory }, m.memory},
 		tabPartitions: {func() string { return T().TabPartitions }, m.parts},
-		tabMonitor:    {func() string { return T().TabMonitor }, m.monitor},
 	}
 	for i, pg := range pages {
 		m.tabs.AddPage(pg.name(), pg.page)
 		m.tabs.SetPageNameFunc(i, pg.name)
 	}
-	m.tabs.OnCurrentChanged.Connect(func(int) { m.openMonitorIfShown() })
 
 	p := ui.NewPanel()
 	p.SetPanelPadding(8)
@@ -312,29 +348,88 @@ func (m *MainForm) knownBoard() ops.Board {
 	return ops.Board{}
 }
 
-// openMonitorIfShown opens the monitor when its tab is shown: a board in
-// download mode is first reset into its application
-func (m *MainForm) openMonitorIfShown() {
-	if m.tabs.CurrentIndex() != tabMonitor || m.busy || m.monitor.active() {
-		m.monitor.showState()
-		return
-	}
-	if m.sess != nil {
-		m.disconnect(m.openMonitorIfShown)
+// openMonitor shows the monitor window over the main one. The board runs
+// its application while it is open: one in download mode is first reset
+// into it, and the main window, which works with the loader, waits.
+func (m *MainForm) openMonitor() {
+	if m.busy || m.monWin != nil {
 		return
 	}
 	p, ok := m.selectedPort()
-	if !ok || isJTAG(p) {
-		m.monitor.showState()
+	switch {
+	case !ok:
+		m.status.ShowMessage(T().NoPortSelected)
+		return
+	case isJTAG(p):
+		m.status.ShowMessage(T().MonJTAG)
 		return
 	}
+	if m.sess != nil {
+		m.disconnect(m.openMonitor)
+		return
+	}
+	c := &ui.DialogContent{}
+	c.InitWidget()
+	c.AddWidget(0, 0, m.monitor)
+	c.OnDialogShow = func() {
+		f := c.Form()
+		f.SetTitle(fmt.Sprintf(T().MonitorTitle, p.Short))
+		w, h := config.Get().MonitorWidth, config.Get().MonitorHeight
+		if w <= 0 || h <= 0 {
+			w, h = 1000, 640
+		}
+		f.SetSize(w, h)
+		f.AddShortcut("Mod+F", m.monitor.openSearch)
+		f.AddShortcut("F3", func() { m.monitor.searchNext(1) })
+	}
+	c.OnDialogReject = func() bool {
+		m.monitorClosed(c)
+		return true
+	}
+	m.monWin = c
+	m.monitor.newSession()
+	m.Form.Panel().ShowDialog(c)
 	m.monitor.open(p, time.Since(m.resetAt) < 5*time.Second)
+	m.updateState()
+}
+
+// closeMonitor closes the monitor window: the Close button
+func (m *MainForm) closeMonitor() {
+	c := m.monWin
+	if c == nil {
+		return
+	}
+	m.monitorClosed(c)
+	c.Form().Close()
+}
+
+// monitorClosed lets the port go and keeps the size of the window; the
+// panel is taken out of it, for the next window
+func (m *MainForm) monitorClosed(c *ui.DialogContent) {
+	if m.monWin != c {
+		return
+	}
+	m.monWin = nil
+	m.monitor.stop()
+	if f := c.Form(); f != nil {
+		w, h := f.Size()
+		config.Update(func(s *config.Settings) { s.MonitorWidth, s.MonitorHeight = w, h })
+	}
+	c.RemoveAllWidgets()
+	m.updateState()
 }
 
 // updateState shows the state of the board: the buttons, the status bar
 func (m *MainForm) updateState() {
-	m.connectBtn.SetText(m.connectText())
-	m.connectBtn.SetEnabled(m.busy || m.sess != nil || m.hasSel)
+	if key := fmt.Sprint(m.busy, m.sess != nil); key != m.stateKey {
+		// The state the window opens in is no change
+		if m.stateKey != "" {
+			m.stateAt = time.Now()
+		}
+		m.stateKey = key
+	}
+	m.showConnectButton()
+	m.monitorBtn.SetEnabled(!m.busy && m.hasSel && !isJTAG(m.sel) && m.monWin == nil)
 	m.portCombo.SetEnabled(!m.busy && m.sess == nil && len(m.ports) > 0)
 	m.flash.setBusy(m.busy)
 	m.monitor.showState()
@@ -344,6 +439,22 @@ func (m *MainForm) updateState() {
 		return
 	}
 	m.showStatus()
+}
+
+// clickGuard is how long the Connect button takes no clicks after the
+// state changed: a double click, or a click again out of impatience,
+// doesn't cancel the connection it has just started, nor disconnect the
+// board it has just connected. The tests of the window click faster.
+var clickGuard = time.Second
+
+// settling tells the state changed less than clickGuard ago
+func (m *MainForm) settling() bool { return time.Since(m.stateAt) < clickGuard }
+
+// showConnectButton shows the Connect button for the state: dim while the
+// state settles
+func (m *MainForm) showConnectButton() {
+	m.connectBtn.SetText(m.connectText())
+	m.connectBtn.SetEnabled((m.busy || m.sess != nil || m.hasSel) && !m.settling())
 }
 
 // showStatus shows in the status bar what the board is connected for

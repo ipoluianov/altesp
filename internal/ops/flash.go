@@ -157,6 +157,7 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 	if opt.Encrypt {
 		return s.flashEncrypted(ctx, items, progress)
 	}
+	tries := 0
 	for i, it := range items {
 		report := func(done, total int) {
 			if progress != nil {
@@ -173,13 +174,25 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 				continue
 			}
 		}
-		err := s.t.WriteFlash(ctx, it.Addr, it.Data, compress, report)
-		if err != nil && s.slowDown(ctx) {
-			// Once more at a lower rate: a block got damaged on the line
-			err = s.t.WriteFlash(ctx, it.Addr, it.Data, compress, report)
-		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", it.Name, err)
+		// In chunks that end at a sector boundary: a chunk written again
+		// after a break erases only its own sectors
+		for off := 0; off < len(it.Data); {
+			at := it.Addr + uint32(off)
+			end := min(len(it.Data), int((at+writeChunk)/sector*sector-it.Addr))
+			if end <= off {
+				end = min(len(it.Data), off+writeChunk)
+			}
+			base := off
+			err := s.t.WriteFlash(ctx, at, it.Data[off:end], compress, func(done, _ int) {
+				report(base+done, len(it.Data))
+			})
+			if err == nil {
+				off = end
+				continue
+			}
+			if err = s.retry(ctx, err, &tries); err != nil {
+				return fmt.Errorf("%s, writing at 0x%X: %w", it.Name, at, err)
+			}
 		}
 		if opt.Verify && canMD5 {
 			got, err := s.t.FlashMD5(ctx, it.Addr, len(it.Data))
@@ -225,7 +238,25 @@ func (s *Session) Read(ctx context.Context, addr uint32, size int, progress load
 	if !s.board.CanRead || s.board.SecureDownload {
 		return nil, ErrCantRead
 	}
-	return s.t.ReadFlash(ctx, addr, size, progress)
+	out := make([]byte, 0, size)
+	tries := 0
+	for len(out) < size {
+		at := addr + uint32(len(out))
+		base := len(out)
+		part, err := s.t.ReadFlash(ctx, at, min(readChunk, size-len(out)), func(done, _ int) {
+			if progress != nil {
+				progress(base+done, size)
+			}
+		})
+		if err == nil {
+			out = append(out, part...)
+			continue
+		}
+		if err = s.retry(ctx, err, &tries); err != nil {
+			return nil, fmt.Errorf("reading at 0x%X: %w", at, err)
+		}
+	}
+	return out, nil
 }
 
 // EraseAll erases the whole flash. Without the stub the ROM erases it
@@ -256,19 +287,4 @@ func (s *Session) Erase(ctx context.Context, addr uint32, size int) error {
 		s.RefreshPartitions(ctx)
 	}
 	return err
-}
-
-// slowDown lowers the rate of the serial link after a failed transfer, when
-// a lower one is left; false when the link can't be slowed down
-func (s *Session) slowDown(ctx context.Context) bool {
-	if s.l == nil || !s.board.Stub || builtinUSB(s.board.Port) || s.l.Baud() <= 115200 || ctx.Err() != nil {
-		return false
-	}
-	baud := lowerBaud(s.l.Baud())
-	if err := s.l.ChangeBaud(ctx, baud); err != nil {
-		return false
-	}
-	s.board.Baud = baud
-	s.board.Notes = append(s.board.Notes, fmt.Sprintf("A write failed: the rate is lowered to %d baud", baud))
-	return true
 }

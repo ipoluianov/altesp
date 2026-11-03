@@ -53,6 +53,10 @@ type SimBoard struct {
 	// LoseReadReg is the number of READ_REG answers lost on the line
 	// before the board answers again
 	LoseReadReg int
+	// BreakAfter makes the line go dead after that many commands that
+	// carry flash data (FLASH_DATA, FLASH_DEFL_DATA, READ_FLASH): nothing
+	// is answered any more, as a cable with a bad contact; 0 never
+	BreakAfter int
 }
 
 type simMode int
@@ -75,6 +79,10 @@ type Sim struct {
 	cond   *sync.Cond
 	out    bytes.Buffer
 	closed bool
+	// dataCmds counts the commands of flash data; dead: the line broke
+	// (see SimBoard.BreakAfter)
+	dataCmds int
+	dead     bool
 
 	mode     simMode
 	dtr, rts bool
@@ -120,6 +128,27 @@ func NewSim(b SimBoard) *Sim {
 	s.boot(false)
 	s.mu.Unlock()
 	return s
+}
+
+// BreakIn makes the line go dead after n more commands of flash data
+func (s *Sim) BreakIn(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.board.BreakAfter = s.dataCmds + n
+}
+
+// DataCommands is the number of commands of flash data handled
+func (s *Sim) DataCommands() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.dataCmds
+}
+
+// broken counts a command of flash data and tells the line gone dead
+func (s *Sim) broken() bool {
+	s.dataCmds++
+	s.dead = s.board.BreakAfter > 0 && s.dataCmds > s.board.BreakAfter
+	return s.dead
 }
 
 // FlashData returns a copy of the flash
@@ -304,6 +333,9 @@ var secureAllowed = map[byte]bool{
 }
 
 func (s *Sim) handle(p []byte) {
+	if s.dead {
+		return
+	}
 	if s.reading {
 		s.readAck(p)
 		return
@@ -409,6 +441,9 @@ func (s *Sim) handle(p []byte) {
 		s.deflLeft = int(u32(1))
 		s.reply(op, 0, nil, true, 0)
 	case opFlashData, opFlashDeflData:
+		if s.broken() {
+			return
+		}
 		if len(data) < 16 || int(u32(0)) != len(data)-16 || int(u32(1)) != s.writeSeq {
 			s.fail(op, 0x05)
 			return
@@ -479,6 +514,9 @@ func (s *Sim) handle(p []byte) {
 		}
 		s.reply(op, 0, s.board.Flash[addr:addr+n], true, 0)
 	case opReadFlash:
+		if s.broken() {
+			return
+		}
 		addr, n, packet := u32(0), u32(1), u32(2)
 		if s.mode != simStub || int(addr+n) > len(s.board.Flash) || packet == 0 || packet > 4096 {
 			s.fail(op, 0x05)

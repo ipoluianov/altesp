@@ -29,8 +29,9 @@ var monitorBauds = []int{9600, 19200, 38400, 57600, 74880, 115200, 230400, 46080
 // lineEndings are the endings the send line adds, by their names
 var lineEndings = []struct{ name, text string }{{"LF", "\n"}, {"CR", "\r"}, {"CRLF", "\r\n"}, {"", ""}}
 
-// MonitorPanel is the page of the Monitor tab: the log of the running
-// board, colored by the ESP-IDF log levels, and a line to send
+// MonitorPanel is the content of the monitor window: the log of the
+// running board, colored by the ESP-IDF log levels, and a line to send. It
+// is made once: the log stays between the windows.
 type MonitorPanel struct {
 	ui.Panel
 	m *MainForm
@@ -56,6 +57,7 @@ type MonitorPanel struct {
 	// The panic decoder of the .elf of the project
 	decoder     *ops.PanicDecoder
 	decELF      string // the .elf the decoder is for, or being opened
+	elfLoading  bool   // decELF is being opened: the log waits for it
 	elfLabel    *ui.Label
 	warned      string // the .elf and board already warned about
 	filterBar   *ui.HBox
@@ -105,7 +107,6 @@ func newMonitorPanel(m *MainForm) *MonitorPanel {
 	p.baudBox.SetOnAccept(func(string) { p.baudChosen() })
 	bar.Add(p.baudBox)
 	bar.Add(p.button(func() string { return T().ResetBtn }, func() string { return T().ResetTip }, p.reset))
-	bar.Add(p.button(func() string { return T().BootloaderBtn }, func() string { return T().BootloaderTip }, p.bootloader))
 	bar.AddSpacing(8)
 	p.pauseBtn = p.button(p.pauseText, nil, p.togglePause)
 	bar.Add(p.pauseBtn)
@@ -117,6 +118,7 @@ func newMonitorPanel(m *MainForm) *MonitorPanel {
 	p.state.SetForegroundColor(colorSecondary.get())
 	ui.OnThemeChanged.Connect(func(bool) { p.state.SetForegroundColor(colorSecondary.get()) })
 	bar.Add(p.state)
+	bar.Add(p.button(func() string { return T().CloseDiff }, func() string { return T().CloseMonitorTip }, m.closeMonitor))
 	p.AddWidget(0, 0, bar)
 
 	// The filter in effect, with the way to show all again
@@ -392,19 +394,20 @@ func (p *MonitorPanel) showState() {
 	case monWaiting:
 		text = T().MonWaiting
 	default:
-		if p.m.hasSel && isJTAG(p.m.sel) {
-			text = T().MonJTAG
-		} else if p.m.sess != nil {
-			text = T().MonDownload
-		} else {
-			text = T().MonClosed
-		}
+		text = T().MonClosed
 	}
 	p.state.SetText(text)
 }
 
-// pull shows what came: a timer calls it
+// pull shows what came: a timer calls it. While the .elf is being opened
+// the bytes wait, so that a panic printed at once is decoded too.
 func (p *MonitorPanel) pull() {
+	if !p.paused {
+		p.syncELF()
+		if p.elfLoading {
+			return
+		}
+	}
 	p.mu.Lock()
 	data := p.in
 	p.in = nil
@@ -415,7 +418,6 @@ func (p *MonitorPanel) pull() {
 		}
 		return
 	}
-	p.syncELF()
 	if len(data) == 0 {
 		return
 	}
@@ -487,20 +489,18 @@ func (p *MonitorPanel) sendLine() {
 // reset restarts the application of the board; a port of the chip's own
 // USB goes away and the monitor waits for it
 func (p *MonitorPanel) reset() {
-	if p.m.sess != nil {
-		p.m.disconnect(p.m.openMonitorIfShown)
-		return
-	}
 	p.onBoard(func(ctx context.Context, mon *ops.Monitor) error { return mon.Reset(ctx) })
 }
 
-// bootloader resets the board into download mode
-func (p *MonitorPanel) bootloader() {
-	if p.m.sess != nil {
-		p.m.status.ShowMessage(T().AlreadyDownload)
+// newSession marks in the log where the log of a new window starts: the
+// lines of the windows before stay above it
+func (p *MonitorPanel) newSession() {
+	if p.lines.RowCount() == 0 {
 		return
 	}
-	p.onBoard(func(ctx context.Context, mon *ops.Monitor) error { return mon.Bootloader(ctx) })
+	p.lines.mark(fmt.Sprintf(T().MonSession, time.Now().Format("15:04:05")))
+	p.lines.Changed()
+	p.log.EnsureVisible(p.lines.RowCount() - 1)
 }
 
 // onBoard does f with the port of the monitor, off the UI thread
@@ -538,8 +538,12 @@ type logLine struct {
 	level byte // 'E', 'W', 'I', 'D', 'V', levelDecoded or 0
 }
 
-// levelDecoded marks the lines of a decoded panic
-const levelDecoded = 'P'
+// levelDecoded marks the lines of a decoded panic, levelMark the line
+// between the logs of two windows
+const (
+	levelDecoded = 'P'
+	levelMark    = 'M'
+)
 
 func (l *logModel) RowCount() int {
 	if l.filter != nil {
@@ -615,8 +619,11 @@ func (l *logModel) Text(row, col int) string { return l.line(row).text }
 
 // Style colors the lines of the ESP-IDF log levels
 func (l *logModel) Style(row, col int) ui.ItemStyle {
-	if line := l.line(row); line.level == levelDecoded {
+	switch l.line(row).level {
+	case levelDecoded:
 		return ui.ItemStyle{Color: colorDecoded.get(), Bold: true}
+	case levelMark:
+		return ui.ItemStyle{Color: colorSecondary.get()}
 	}
 	if c, ok := levelColor(l.line(row).level); ok {
 		return ui.ItemStyle{Color: c}
@@ -686,6 +693,14 @@ func levelOf(text string) byte {
 	return 0
 }
 
+// mark adds a line of its own: an open line coming is ended first
+func (l *logModel) mark(text string) {
+	if len(l.partial) > 0 {
+		l.add([]byte("\n"))
+	}
+	l.push(logLine{text: text, level: levelMark})
+}
+
 func (l *logModel) clear() {
 	l.shown = nil
 	l.lines = nil
@@ -727,14 +742,17 @@ func (p *MonitorPanel) syncELF() {
 	p.decoder = nil
 	p.showELF()
 	if path == "" {
+		p.elfLoading = false
 		return
 	}
+	p.elfLoading = true
 	go func() {
 		d, err := ops.NewPanicDecoder(path)
 		ui.Invoke(func() {
 			if p.decELF != path {
 				return
 			}
+			p.elfLoading = false
 			if err != nil {
 				p.m.status.ShowMessage(fmt.Sprintf(T().ELFError, filepath.Base(path), firstLine(err.Error())))
 				p.elfLabel.SetText("")
@@ -820,12 +838,6 @@ func (p *MonitorPanel) lineMenu() *ui.ContextMenu {
 		}
 	})
 	dec := item(func() string { return T().DecodeAddress }, p.decodeAddress)
-	if line, ok := p.currentLine(); ok {
-		for _, a := range addressesIn(line.text) {
-			a := a
-			item(func() string { return fmt.Sprintf(T().ShowInHex, a) }, func() { p.m.showAppAddr(a) })
-		}
-	}
 	menu.AddSeparator()
 	byTag := item(func() string { return T().FilterTag }, func() {
 		if line, ok := p.currentLine(); ok {
@@ -959,45 +971,4 @@ func (p *MonitorPanel) searchNext(dir int) {
 		}
 	}
 	p.searchState.SetText(T().NotFound)
-}
-
-// showAppAddr shows in the Memory tab where an address of the running
-// application is in the flash: through the segments of the application
-// that boots, of the image or of the board. The board must be in download
-// mode for it: with the monitor open the user is asked first.
-func (m *MainForm) showAppAddr(addr uint32) {
-	show := func(fa uint32) {
-		m.memory.show(fa, 1)
-		m.status.ShowMessage(fmt.Sprintf(T().AppAddrAt, addr, fa))
-	}
-	if m.image != nil {
-		fa, err := m.image.FlashAddrOf(addr)
-		if err != nil {
-			ui.ShowMessageBox(m.Form.Panel(), fmt.Sprintf(T().ShowInHex, addr), err.Error())
-			return
-		}
-		show(fa)
-		return
-	}
-	look := func() {
-		var fa uint32
-		m.run(true, func(ctx context.Context, s *ops.Session) error {
-			var err error
-			fa, err = s.FlashAddrOf(ctx, addr)
-			return err
-		}, func(err error) {
-			if err != nil {
-				m.showError(fmt.Sprintf(T().ShowInHex, addr), err)
-				return
-			}
-			show(fa)
-		})
-	}
-	if m.sess != nil {
-		look()
-		return
-	}
-	ask(m.Form, fmt.Sprintf(T().ShowInHex, addr), T().ShowInHexAsk,
-		choice{T().ConnectAndShow, ui.ButtonAccept, look},
-		choice{T().Cancel, ui.ButtonReject, nil})
 }

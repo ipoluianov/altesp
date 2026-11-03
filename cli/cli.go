@@ -18,6 +18,11 @@ const usage = `Usage:
   altesp flash   [--port P] <build folder>
   altesp flash   [--port P] <address> <file> [<address> <file>...]
   altesp read    [--port P] <address> <size> <file>
+  altesp read    [--port P] --parts <folder>   the parts into a new folder: a build
+                                           folder to flash back (--no-data: without
+                                           NVS, file systems and the other data)
+  altesp read    [--port P] --trimmed <file>   the flash without the erased tail
+  altesp read    [--port P] --app <file>       the application that boots, alone
   altesp erase   [--port P] [<address> <size>]  the whole flash, or a region
   altesp monitor [--port P] [--elf FILE] [--reset]   panics decoded with the .elf
   altesp coredump [--port P] [--elf FILE] [<file>]  the board's coredump, or a file

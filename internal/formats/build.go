@@ -217,7 +217,75 @@ func (b *Build) finish(dir string) (*Build, error) {
 		}
 	}
 	sort.Slice(b.Files, func(i, j int) bool { return b.Files[i].Addr < b.Files[j].Addr })
+	b.kindsByTable()
 	return b, nil
+}
+
+// kindsByTable corrects what the content alone tells by the build's own
+// partition table: a file at an app partition is an application; a file
+// at a data partition whose content tells nothing, or tells a partition
+// table (ESP-AT keeps one in at_customize), is of the partition's subtype.
+func (b *Build) kindsByTable() {
+	parts := b.table()
+	for i := range b.Files {
+		f := &b.Files[i]
+		for _, p := range parts {
+			if f.Addr != p.Offset {
+				continue
+			}
+			switch {
+			case p.IsApp():
+				f.Kind = App
+			case f.Kind == Unknown || f.Kind == PartitionTable || f.Kind == Bootloader:
+				f.Kind = kindOfData(p)
+			}
+		}
+	}
+}
+
+// table is the partition table of the build: the file that holds one and
+// is not inside a partition it lists
+func (b *Build) table() []Partition {
+	for _, f := range b.Files {
+		if f.Kind != PartitionTable {
+			continue
+		}
+		data, err := os.ReadFile(f.Path)
+		if err != nil {
+			continue
+		}
+		parts, err := ParsePartitionTable(data)
+		if err != nil {
+			continue
+		}
+		inside := false
+		for _, p := range parts {
+			inside = inside || f.Addr >= p.Offset && f.Addr < p.Offset+p.Size
+		}
+		if !inside {
+			return parts
+		}
+	}
+	return nil
+}
+
+// kindOfData is what a data partition holds by its subtype
+func kindOfData(p Partition) Kind {
+	switch p.SubTypeName() {
+	case "nvs":
+		return NVS
+	case "ota":
+		return OTAData
+	case "phy":
+		return PHYInit
+	case "spiffs":
+		return SPIFFS
+	case "littlefs":
+		return LittleFS
+	case "fat":
+		return FAT
+	}
+	return Data
 }
 
 // loadPIO finds .pio/build/<env>/ in a project folder, or takes dir as

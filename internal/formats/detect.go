@@ -19,6 +19,10 @@ const (
 	LittleFS
 	SPIFFS
 	FAT
+	// PHYInit and Data are told by the partition a file is for, not by
+	// its content: the radio calibration, other data of the firmware
+	PHYInit
+	Data
 )
 
 var kindNames = [...]string{
@@ -32,6 +36,8 @@ var kindNames = [...]string{
 	LittleFS:       "LittleFS",
 	SPIFFS:         "SPIFFS",
 	FAT:            "FAT",
+	PHYInit:        "PHY calibration",
+	Data:           "Data",
 }
 
 func (k Kind) String() string {

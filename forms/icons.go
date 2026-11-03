@@ -11,6 +11,8 @@ import (
 // a shape inside another one is a hole
 var iconPaths = map[string]string{
 	"menu": "M4 6h16v2H4zM4 11h16v2H4zM4 16h16v2H4z",
+	// A ring open at the top right, its arrow pointing into the gap
+	"refresh": "M16 5.07A8 8 0 1 0 19.73 9.93L17.8 10.45A6 6 0 1 1 15 6.8ZM17.1 3.17L18.96 7.94L13.9 8.71Z",
 }
 
 // IconSize is the side of the toolbar icons

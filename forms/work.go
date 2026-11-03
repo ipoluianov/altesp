@@ -36,6 +36,7 @@ func (m *MainForm) run(needBoard bool, work func(ctx context.Context, s *ops.Ses
 		}
 		port = p
 		m.monitor.stop()
+		m.connecting = true
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.busy, m.cancel = true, cancel
@@ -69,7 +70,22 @@ func (m *MainForm) run(needBoard bool, work func(ctx context.Context, s *ops.Ses
 			}
 		}
 		if err == nil && work != nil {
+			notes := len(sess.Board().Notes)
 			err = work(ctx, sess)
+			// What happened to the connection during the job, such as a
+			// break and a new connection, goes to the log
+			if added := sess.Board().Notes; len(added) > notes {
+				for _, n := range added[notes:] {
+					n := n
+					ui.Invoke(func() { m.logOp(fmt.Sprintf(T().OpNote, n), nil) })
+				}
+			}
+		}
+		// A job broken by the board unplugged says so
+		if err != nil && !ctxErr(err) && needBoard && !overJTAG {
+			if ports, _ := ops.Ports(); !listed(port0(sess, port), ports, nil) {
+				err = fmt.Errorf("%s: %w", T().BoardUnplugged, err)
+			}
 		}
 		// After a failure or a stop the loader may be anywhere: the next
 		// job connects again
@@ -81,6 +97,7 @@ func (m *MainForm) run(needBoard bool, work func(ctx context.Context, s *ops.Ses
 		cancel()
 		ui.Invoke(func() {
 			m.busy, m.cancel = false, nil
+			m.connecting = false
 			m.hideManual()
 			if dropped && m.sess == sess {
 				m.setSession(nil)
@@ -108,6 +125,7 @@ func (m *MainForm) stopJob() {
 
 // connected takes the session of a board just connected
 func (m *MainForm) connected(s *ops.Session) {
+	m.connecting = false
 	m.setSession(s)
 	m.board = s.Board()
 	m.hasBoard = true
@@ -127,12 +145,22 @@ func (m *MainForm) setSession(s *ops.Session) {
 // job running is cancelled
 func (m *MainForm) connect() {
 	switch {
+	case m.settling():
+		// Too soon after the last change: a double click
 	case m.busy:
 		m.stopJob()
 	case m.sess != nil:
 		m.disconnect(nil)
 	default:
 		m.run(true, nil, func(err error) { m.showError(T().Connect, err) })
+	}
+}
+
+// connectOnly connects to the board, and does nothing else: the Connect
+// button of a tab, which must not cancel nor disconnect
+func (m *MainForm) connectOnly() {
+	if !m.busy && m.sess == nil && !m.settling() {
+		m.connect()
 	}
 }
 
@@ -145,6 +173,10 @@ func (m *MainForm) showError(title string, err error) {
 	if ctxErr(err) {
 		m.status.ShowMessage(T().Stopped)
 		return
+	}
+	// Every failure goes to the log, once
+	if err != m.loggedErr {
+		m.logOp(title, err)
 	}
 	m.status.ShowMessage(firstLine(err.Error()))
 	ui.ShowMessageBox(m.Form.Panel(), title, err.Error())
@@ -229,6 +261,94 @@ func (m *MainForm) listPortsNow() {
 	ports, devs := listAll()
 	m.lastList.Store(fmt.Sprint(ports, devs))
 	m.setPorts(ports, devs)
+}
+
+// refreshPorts lists the ports again at once (the button left of the
+// list). An entry kept while its port is away goes when the port is still
+// not there: the board was unplugged.
+func (m *MainForm) refreshPorts() {
+	if m.busy {
+		m.status.ShowMessage(T().Busy)
+		return
+	}
+	ports, devs := listAll()
+	if m.hasSel && !listed(m.sel, ports, devs) {
+		m.unplugged()
+	}
+	m.lastList.Store(fmt.Sprint(ports, devs))
+	m.setPorts(ports, devs)
+	m.updateState()
+	m.status.ShowMessage(fmt.Sprintf(T().PortsFound, len(m.ports)))
+}
+
+// unplugWait is how long the port of a chip's own USB may be away before
+// its board is taken as unplugged: it is away for a moment on every reset
+const unplugWait = 2500 * time.Millisecond
+
+// resetWait is how long after a reset by the program the port of a chip's
+// own USB is waited for to come back
+const resetWait = 5 * time.Second
+
+// checkUnplugged ends the session of a board whose port is gone (the timer
+// of the port list). A bridge's port stays through the resets of the
+// chip, so its going is the board unplugged; the port of a chip's own USB
+// goes on every reset, so it is waited for a moment, and not at all while
+// a job runs or after a reset by the program.
+func (m *MainForm) checkUnplugged() {
+	if m.sess == nil || m.busy || !m.hasSel || listed(m.sel, m.ports, nil) {
+		m.goneSince = time.Time{}
+		return
+	}
+	if m.goneSince.IsZero() {
+		m.goneSince = time.Now()
+	}
+	if ops.BuiltinUSB(m.sel) && (time.Since(m.goneSince) < unplugWait || time.Since(m.resetAt) < resetWait) {
+		return
+	}
+	m.unplugged()
+	m.lastList.Store("")
+	m.listPorts()
+}
+
+// unplugged ends the session of the board unplugged and lets its entry go;
+// the card stays, to tell what was on the board
+func (m *MainForm) unplugged() {
+	m.goneSince = time.Time{}
+	if s := m.sess; s != nil {
+		m.setSession(nil)
+		go func() {
+			m.sessMu.Lock()
+			defer m.sessMu.Unlock()
+			s.Close(context.Background(), false)
+		}()
+	}
+	m.hasSel, m.sel = false, ops.PortInfo{}
+	m.updateState()
+	m.status.ShowMessage(T().BoardUnplugged)
+}
+
+// port0 is the port of the job: the session's, or the one it connects to
+func port0(s *ops.Session, port ops.PortInfo) ops.PortInfo {
+	if s != nil {
+		return s.Board().Port
+	}
+	return port
+}
+
+// listed tells whether the entry is among the ports and USB-JTAG devices
+func listed(p ops.PortInfo, ports []ops.PortInfo, devs []ops.JTAGDevice) bool {
+	key := portKey(p)
+	for _, q := range ports {
+		if portKey(q) == key {
+			return true
+		}
+	}
+	for _, d := range devs {
+		if portKey(jtagEntry(d)) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // The USB-JTAG of a chip is an entry of the port list of its own: a port
@@ -359,7 +479,6 @@ func (m *MainForm) choosePort(p ops.PortInfo) {
 	m.hasBoard = false
 	m.showBoard()
 	config.Update(func(s *config.Settings) { s.LastPort = portKey(p) })
-	m.openMonitorIfShown()
 }
 
 // selectedPort returns the port selected

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"errors"
 )
 
 // Firmware is what the flash tells about the firmware on it
@@ -38,8 +39,19 @@ func (f Firmware) Text() string {
 	return ""
 }
 
-// erasedMD5 is the MD5 of an erased sector
-var erasedMD5 = md5.Sum(bytes.Repeat([]byte{0xFF}, sector))
+// Erased tells whether a region of the flash is erased (all FF), by the
+// MD5 the loader computes on the chip: nothing is read over the line. The
+// ROM, the stub and JTAG all compute it; Secure Download Mode doesn't.
+func (s *Session) Erased(ctx context.Context, addr uint32, size int) (bool, error) {
+	if s.board.SecureDownload {
+		return false, errors.New("Secure Download Mode doesn't compute the MD5 of the flash")
+	}
+	sum, err := s.t.FlashMD5(ctx, addr, size)
+	if err != nil {
+		return false, err
+	}
+	return sum == md5.Sum(bytes.Repeat([]byte{0xFF}, size)), nil
+}
 
 // checkFirmware tells the firmware on the board. The bootloader's sector
 // is told erased by its MD5, which the ROM, the stub and JTAG all compute:
@@ -50,11 +62,11 @@ func (s *Session) checkFirmware(ctx context.Context) {
 	if b.Chip == nil || b.SecureDownload || b.Security.FlashEncryption {
 		return
 	}
-	sum, err := s.t.FlashMD5(ctx, b.Chip.BootloaderAddr, sector)
+	erased, err := s.Erased(ctx, b.Chip.BootloaderAddr, sector)
 	switch {
 	case err != nil:
 		return
-	case sum == erasedMD5:
+	case erased:
 		b.Firmware = FirmwareEmpty
 		return
 	}

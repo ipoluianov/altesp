@@ -345,7 +345,9 @@ func bootloaderAt(data []byte) (int, *Image) {
 		if off >= len(data) || data[off] != imageMagic || !allFF(data[:off]) {
 			continue
 		}
-		if im, err := ParseImage(data[off:]); err == nil && im.App == nil {
+		// An application built before ESP-IDF v3.3 has no description
+		// either: a bootloader also maps nothing from the flash
+		if im, err := ParseImage(data[off:]); err == nil && im.App == nil && im.IsBootloader {
 			return off, im
 		}
 	}

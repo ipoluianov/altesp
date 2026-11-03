@@ -24,6 +24,12 @@ type listFile struct {
 type FlashTab struct {
 	ui.Panel
 	m *MainForm
+	// export is the Read flash dialog shown last (for the tests)
+	export *exportDialog
+	// folderBtn chooses a build folder; emptyBox is shown in place of the
+	// empty list
+	folderBtn *ui.Button
+	emptyBox  *ui.Panel
 
 	files   []listFile
 	project string // the folder the files are remembered for
@@ -86,15 +92,25 @@ func newFlashTab(m *MainForm) *FlashTab {
 	f.list.SetContextMenu(f.rowMenu())
 	f.list.OnMouseDown.Connect(f.listMouseDown)
 	f.list.OnActivated.Connect(func(row int) { f.changeAddress(row) })
-	f.AddWidget(2, 0, f.list)
+	// While the list is empty: the hint, and the two ways to fill it
+	f.emptyBox = f.emptyPanel()
+	listBox := ui.NewPanel()
+	listBox.SetPanelPadding(0)
+	listBox.AddWidget(0, 0, f.list)
+	listBox.AddWidget(1, 0, f.emptyBox)
+	f.AddWidget(2, 0, listBox)
+	f.showEmpty()
 
 	buttons := ui.NewHBox()
 	buttons.SetCellPadding(6)
 	f.addBtn = textButton(func() string { return T().Add }, f.addDialog)
 	buttons.Add(f.addBtn)
+	f.folderBtn = textButton(func() string { return T().BuildFolderBtn }, f.folderDialog)
+	f.folderBtn.SetTooltipFunc(func() string { return T().BuildFolderTip })
+	buttons.Add(f.folderBtn)
 	f.eraseBtn = textButton(func() string { return T().EraseAll }, f.eraseAll)
 	buttons.Add(f.eraseBtn)
-	f.readBtn = textButton(func() string { return T().ReadFlash }, func() { f.readFlash(nil) })
+	f.readBtn = textButton(func() string { return T().ReadFlash }, f.showExport)
 	buttons.Add(f.readBtn)
 	buttons.AddStretch()
 	f.verify = ui.NewCheckbox("")
@@ -231,7 +247,7 @@ func kindText(kind string) string {
 	if kind == "" {
 		return T().KindUnknown
 	}
-	return kind
+	return T().Kind(kind)
 }
 
 // listMouseDown toggles a file by its check box; a right click selects the
@@ -332,6 +348,7 @@ func (f *FlashTab) setBusy(busy bool) {
 
 func (f *FlashTab) changed() {
 	f.model.Changed()
+	f.showEmpty()
 	f.list.Update()
 	f.saveProject()
 }
@@ -397,6 +414,61 @@ func (f *FlashTab) addDialog() {
 			f.addPaths(paths)
 		}
 	})
+}
+
+// folderDialog takes the build folder chosen in the dialog, as one dropped
+func (f *FlashTab) folderDialog() {
+	dir := ""
+	if f.project != "" {
+		dir = filepath.Dir(f.project)
+	}
+	f.m.Form.ShowSelectDirectoryDialog(ui.SelectDirectoryDialogOptions{Title: T().BuildFolderTitle, DefaultDirectory: dir}, func(path string, err error) {
+		if err == nil && path != "" {
+			f.addPaths([]string{path})
+		}
+	})
+}
+
+// emptyPanel is shown in place of the empty list: the hint, and links to
+// add files or choose a build folder
+func (f *FlashTab) emptyPanel() *ui.Panel {
+	p := ui.NewPanel()
+	p.SetYExpandable(true)
+	p.SetXExpandable(true)
+	// The frame and the background of the list it stands for
+	p.SetOnPaint(func(cnv *ui.Canvas) {
+		pal := ui.CurrentPalette()
+		cnv.FillFrame(0, 0, p.Width(), p.Height(), 3, pal.Base, pal.Border)
+	})
+	p.AddVSpacer(0, 1)
+	p.AddHSpacer(1, 0)
+	box := ui.NewVBox()
+	box.SetCellPadding(8)
+	hint := secondaryLabel(func() string { return T().DropHint })
+	hint.SetTextAlign(ui.HAlignCenter)
+	box.Add(hint)
+	links := ui.NewHBox()
+	links.SetCellPadding(16)
+	links.AddStretch()
+	files := ui.NewLink("", f.addDialog)
+	files.SetTextFunc(func() string { return T().AddFilesLink })
+	links.Add(files)
+	folder := ui.NewLink("", f.folderDialog)
+	folder.SetTextFunc(func() string { return T().BuildFolderLink })
+	links.Add(folder)
+	links.AddStretch()
+	box.Add(links)
+	p.AddWidget(1, 1, box)
+	p.AddHSpacer(1, 2)
+	p.AddVSpacer(2, 1)
+	return p
+}
+
+// showEmpty shows the hint in place of the list while it is empty
+func (f *FlashTab) showEmpty() {
+	empty := len(f.files) == 0
+	f.list.SetVisible(!empty)
+	f.emptyBox.SetVisible(empty)
 }
 
 // addPaths adds dropped or chosen files; a folder is a build, which
@@ -650,6 +722,11 @@ func (f *FlashTab) write(items []ops.Item) {
 			f.m.board = after
 			f.m.boardChanged()
 		}
+		var names []string
+		for _, it := range items {
+			names = append(names, fmt.Sprintf("%s @0x%X", it.Name, it.Addr))
+		}
+		f.m.logOp(fmt.Sprintf(T().OpFlash, strings.Join(names, ", ")), err)
 		switch {
 		case err != nil && ctxErr(err):
 			f.showProgress(f.bar.Value(), T().Stopped)
@@ -660,7 +737,7 @@ func (f *FlashTab) write(items []ops.Item) {
 		default:
 			f.showProgress(1, fmt.Sprintf(T().Flashed, len(items), ops.SizeText(total), time.Since(start).Seconds()))
 			if closed && config.Get().MonitorAfterFlash {
-				f.m.tabs.SetCurrentIndex(tabMonitor)
+				f.m.openMonitor()
 			}
 		}
 	})

@@ -36,6 +36,7 @@ func (m *MainForm) mainMenu() *ui.ContextMenu {
 	menu.AddSeparator()
 
 	menu.AddItem(T().Settings, m.settingsDialog)
+	menu.AddItem(G().Menu, m.showGuide)
 	menu.AddItem(T().Shortcuts, m.showShortcuts).SetShortcut("F1")
 	menu.AddItem(T().CheckUpdates, m.checkUpdates)
 	menu.AddSeparator()

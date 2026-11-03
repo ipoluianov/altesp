@@ -50,6 +50,12 @@ type Settings struct {
 	// MonitorAfterFlash switches to the monitor after a board is flashed
 	// and reset
 	MonitorAfterFlash bool `json:"monitor_after_flash"`
+	// ExportDir is the folder the firmware was saved to last
+	ExportDir string `json:"export_dir,omitempty"`
+	// MonitorWidth and MonitorHeight are the size of the monitor window
+	// last closed; 0 is the default
+	MonitorWidth  int `json:"monitor_width,omitempty"`
+	MonitorHeight int `json:"monitor_height,omitempty"`
 	// LineEnding is what the send line of the monitor adds: "", "LF",
 	// "CR", "CRLF"
 	LineEnding string `json:"line_ending"`

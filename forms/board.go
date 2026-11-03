@@ -261,7 +261,7 @@ func (m *MainForm) saveReport() {
 func (m *MainForm) resetBoard() {
 	switch {
 	case m.sess != nil:
-		m.disconnect(m.openMonitorIfShown)
+		m.disconnect(nil)
 	case m.monitor.active():
 		m.monitor.reset()
 	case isJTAG(m.sel):
@@ -276,8 +276,6 @@ func (m *MainForm) enterBootloader() {
 	switch {
 	case m.sess != nil:
 		m.status.ShowMessage(T().AlreadyDownload)
-	case m.monitor.active():
-		m.monitor.bootloader()
 	case isJTAG(m.sel):
 		m.status.ShowMessage(T().ConnectFirst)
 	default:

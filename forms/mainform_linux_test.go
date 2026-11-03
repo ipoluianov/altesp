@@ -45,6 +45,10 @@ func newTestForm(t *testing.T) (*MainForm, *uitest.Window) {
 // newTestFormWith is newTestForm with another simulated board
 func newTestFormWith(t *testing.T, simulate func() func()) (*MainForm, *uitest.Window) {
 	t.Cleanup(simulate())
+	// The tests click faster than a person; TestClickGuard has the guard
+	old := clickGuard
+	clickGuard = 0
+	t.Cleanup(func() { clickGuard = old })
 	config.SetDir(t.TempDir())
 	config.Load()
 	SetLanguage("en")
@@ -96,16 +100,17 @@ func TestMainFormTabs(t *testing.T) {
 	shot(t, w, "01-main")
 	w.Find("No board connected")
 	w.Find("Connect")
+	w.Find("Monitor")
 	w.Find("Tools ▾")
 	w.Find(T().NoProjects)
-	if n := m.tabs.PageCount(); n != 4 {
+	if n := m.tabs.PageCount(); n != 3 {
 		t.Fatal("tabs:", n)
 	}
 	// The only board is selected by itself
 	if p, ok := m.selectedPort(); !ok || p.Name != "sim0" {
 		t.Fatal("port", p, ok)
 	}
-	for i := range 4 {
+	for i := range 3 {
 		w.Shortcut("Ctrl+" + string(rune('1'+i)))
 		if got := m.tabs.CurrentIndex(); got != i {
 			t.Fatalf("Ctrl+%d: tab %d", i+1, got)
@@ -186,12 +191,12 @@ func TestFlash(t *testing.T) {
 	if !strings.HasPrefix(m.flash.progress.Text(), "Written 2 MB in") {
 		t.Fatal("progress:", m.flash.progress.Text())
 	}
-	// Reset into the application, then the monitor with its log
+	// Reset into the application, then the monitor window with its log
 	if m.sess != nil {
 		t.Error("the session is still open")
 	}
-	if m.tabs.CurrentIndex() != tabMonitor {
-		t.Fatal("tab", m.tabs.CurrentIndex())
+	if m.monWin == nil {
+		t.Fatal("no monitor window")
 	}
 	waitFor(t, w, "the log", func() bool { return m.monitor.lines.RowCount() >= 5 })
 	levels := map[byte]bool{}
@@ -203,9 +208,12 @@ func TestFlash(t *testing.T) {
 			t.Errorf("no %c line", lv)
 		}
 	}
-	shot(t, w, "06-monitor")
-	m.tabs.SetCurrentIndex(tabFlash)
+	shot(t, w.Dialog(), "06-monitor")
+	m.closeMonitor()
 	w.Settle()
+	if m.monitor.active() {
+		t.Fatal("the port is still open")
+	}
 	shot(t, w, "05-flashed")
 }
 
@@ -630,7 +638,7 @@ func TestPanicDecode(t *testing.T) {
 		"\x1b[0;31mBacktrace: 0x%08x:0x3ffb5070\x1b[0m\r\n\r\nELF file SHA256: 0000\r\n", crash)
 	m, w := newTestFormWith(t, func() func() { return ops.SimulateBoardWith(ops.SimOptions{AppLog: log}) })
 	config.Update(func(s *config.Settings) { s.LastELF = elf })
-	w.Shortcut("Ctrl+4")
+	w.Shortcut("F6")
 	decoded := func() []string {
 		var out []string
 		for _, l := range m.monitor.lines.lines {
@@ -644,7 +652,7 @@ func TestPanicDecode(t *testing.T) {
 	if got := strings.Join(decoded(), "\n"); !strings.Contains(got, "crash") {
 		t.Fatalf("decoded:\n%s", got)
 	}
-	shot(t, w, "16-panic")
+	shot(t, w.Dialog(), "16-panic")
 	// Decode address finds the function; Filter by level keeps the errors
 	for i, l := range m.monitor.lines.lines {
 		if strings.HasPrefix(l.text, "Backtrace") {
@@ -841,17 +849,20 @@ func TestSettings(t *testing.T) {
 // kept for the device
 func TestMonitorSearchAndPortMenu(t *testing.T) {
 	m, w := newTestForm(t)
-	w.Shortcut("Ctrl+4")
+	w.Shortcut("F6")
 	waitFor(t, w, "the log", func() bool { return m.monitor.lines.RowCount() >= 5 })
-	w.Shortcut("Ctrl+F")
+	d := w.Dialog()
+	d.Shortcut("Ctrl+F")
 	if !m.monitor.searchBar.IsVisible() {
 		t.Fatal("no search bar")
 	}
-	w.Type("sensor")
-	w.Key(ui.KeyEnter, ui.KeyModifiers{})
+	d.Type("sensor")
+	d.Key(ui.KeyEnter, ui.KeyModifiers{})
 	if line, _ := m.monitor.currentLine(); !strings.Contains(line.text, "sensor not found") {
 		t.Fatal("found:", line.text)
 	}
+	m.closeMonitor()
+	w.Settle()
 	config.Update(func(s *config.Settings) { s.Resets = map[string]string{m.sel.Key(): "manual"} })
 	if m.resetFor(m.sel) != ops.ResetManual {
 		t.Fatal("the reset sequence is not kept")
@@ -956,12 +967,9 @@ func TestJTAG(t *testing.T) {
 	m.flash.changed()
 	w.Click(m.flash.flashBtn)
 	waitFor(t, w, "flashing", func() bool { return !m.busy && m.flash.bar.Value() == 1 })
-	// Reset after writing, then the Monitor tab tells to use the serial port
-	if m.tabs.CurrentIndex() != tabMonitor || m.monitor.active() {
-		t.Fatal("monitor", m.tabs.CurrentIndex(), m.monitor.active())
-	}
-	if m.monitor.state.Text() != T().MonJTAG {
-		t.Fatal("monitor says", m.monitor.state.Text())
+	// Reset after writing; USB-JTAG has no log, so no monitor window
+	if m.monWin != nil || m.monitor.active() || m.monitorBtn.Enabled() {
+		t.Fatal("monitor", m.monWin != nil, m.monitor.active(), m.monitorBtn.Enabled())
 	}
 }
 
@@ -1067,26 +1075,39 @@ func TestEncryptOption(t *testing.T) {
 	waitFor(t, w, "the encrypted write", func() bool { return !m.busy && m.flash.bar.Value() == 1 })
 }
 
-// Show in hex maps an address of the running app to the flash: the app's
-// segment at 0x3C000020 is at 0x10020
-func TestShowInHex(t *testing.T) {
-	m, w := newTestFormWith(t, func() func() {
-		return ops.SimulateBoardWith(ops.SimOptions{AppLog: "I (200) app: table at 0x3C000040\r\n"})
-	})
-	w.Shortcut("Ctrl+4")
-	waitFor(t, w, "the log", func() bool {
-		for _, l := range m.monitor.lines.lines {
-			if strings.Contains(l.text, "0x3C000040") {
-				return true
-			}
+// The monitor is a window over the main one: a board in download mode is
+// reset into its application first; the log of the window before stays,
+// under a line of its own
+func TestMonitorWindow(t *testing.T) {
+	m, w := newTestForm(t)
+	connect(t, m, w)
+	w.Click(m.monitorBtn)
+	waitFor(t, w, "the log", func() bool { return m.monitor.lines.RowCount() >= 5 })
+	if m.sess != nil || m.monWin == nil || m.monitorBtn.Enabled() {
+		t.Fatal("session", m.sess != nil, "window", m.monWin != nil)
+	}
+	w.Dialog().Find("Close")
+	m.closeMonitor()
+	w.Settle()
+	if m.monWin != nil || m.monitor.active() || !m.monitorBtn.Enabled() {
+		t.Fatal("after closing: window", m.monWin != nil, "port", m.monitor.active())
+	}
+	before := m.monitor.lines.RowCount()
+	w.Shortcut("F6")
+	waitFor(t, w, "the log again", func() bool { return m.monitor.lines.RowCount() > before+1 })
+	marks := 0
+	for _, l := range m.monitor.lines.lines {
+		if l.level == levelMark {
+			marks++
 		}
-		return false
-	})
-	m.showAppAddr(0x3C000040)
-	clickIn(t, w, "Connect and show")
-	waitFor(t, w, "the address", func() bool { return !m.busy && m.tabs.CurrentIndex() == tabMemory })
-	if got := m.memory.view.Caret(); got != 0x10040 {
-		t.Fatalf("caret 0x%X", got)
+	}
+	if marks != 1 {
+		t.Fatal("marks:", marks)
+	}
+	m.closeMonitor()
+	w.Settle()
+	if config.Get().MonitorWidth <= 0 {
+		t.Error("the size of the window is not kept")
 	}
 }
 
@@ -1104,4 +1125,283 @@ func TestCheckUpdates(t *testing.T) {
 	d.Find("Open the release page")
 	d.Find("AltEsp v9.9.9 is available (you have dev).")
 	d.Form.Close()
+}
+
+// Refresh drops the entry of a board unplugged while connected, and its
+// session; the card stays; the only board left is selected
+func TestRefreshPorts(t *testing.T) {
+	m, w := newTestForm(t)
+	connect(t, m, w)
+	m.sel = ops.PortInfo{Name: "/dev/ttyUSB9", Short: "ttyUSB9", USB: true, VID: 0x10c4, PID: 0xea60, SerialNumber: "gone"}
+	w.Click(m.refreshBtn)
+	w.Settle()
+	if m.sess != nil || !m.hasBoard {
+		t.Fatal("session", m.sess != nil, "card", m.hasBoard)
+	}
+	if !m.hasSel || m.sel.Name != "sim0" {
+		t.Fatal("selected:", m.sel.Name, m.hasSel)
+	}
+	if strings.Contains(m.portCombo.ItemText(m.portCombo.SelectedIndex()), "ttyUSB9") {
+		t.Fatal("the unplugged port is still listed")
+	}
+}
+
+// A board unplugged while connected is disconnected by itself: through a
+// bridge at once, on its own USB when its port stays away past a reset
+func TestUnplugged(t *testing.T) {
+	m, w := newTestForm(t)
+	connect(t, m, w)
+	m.sel = ops.PortInfo{Name: "/dev/ttyUSB9", Short: "ttyUSB9", USB: true, VID: 0x10c4, PID: 0xea60, SerialNumber: "gone"}
+	m.checkUnplugged()
+	w.Settle()
+	if m.sess != nil || !m.hasBoard {
+		t.Fatal("bridge: session", m.sess != nil, "card", m.hasBoard)
+	}
+	waitFor(t, w, "the board left", func() bool { return m.hasSel && m.sel.Name == "sim0" })
+
+	connect(t, m, w)
+	m.sel = ops.PortInfo{Name: "/dev/ttyACM9", Short: "ttyACM9", USB: true, VID: 0x303a, PID: 0x1001, SerialNumber: "AA:BB"}
+	m.checkUnplugged()
+	if m.sess == nil {
+		t.Fatal("own USB: disconnected at once, as if it were a reset")
+	}
+	m.goneSince = time.Now().Add(-unplugWait)
+	m.resetAt = time.Time{}
+	m.checkUnplugged()
+	w.Settle()
+	if m.sess != nil {
+		t.Fatal("own USB: still connected after the wait")
+	}
+}
+
+// The guide shows each topic with its picture and text; it moves
+func TestGuide(t *testing.T) {
+	m, w := newTestForm(t)
+	m.showGuide()
+	d := w.Dialog()
+	g := m.guide
+	for i := range g.topics {
+		g.list.SetCurrentRow(i)
+		d.Settle()
+		if g.current != i || g.title.Text() != g.topics[i].title() {
+			t.Fatalf("topic %d: %q", i, g.title.Text())
+		}
+		// A few moments of each picture
+		for _, at := range []float64{0.2, 1.7, 3.9} {
+			g.start = time.Now().Add(-time.Duration(at * float64(time.Second)))
+			d.Settle()
+			shot(t, d, fmt.Sprintf("guide-%02d-%.0f", i, at*10))
+		}
+	}
+	d.Click(d.Find("Next →"))
+	if g.current != 0 {
+		t.Fatal("Next after the last topic:", g.current)
+	}
+	d.Form.Close()
+	w.Settle()
+	// In Russian from the start: the language can't change while it is open
+	SetLanguage("ru")
+	m.showGuide()
+	d = w.Dialog()
+	d.Find("Дальше →")
+	for i := range m.guide.topics {
+		m.guide.list.SetCurrentRow(i)
+		m.guide.start = time.Now().Add(-1700 * time.Millisecond)
+		d.Settle()
+		shot(t, d, fmt.Sprintf("guide-ru-%02d", i))
+	}
+}
+
+// Every text of the guide is translated
+func TestGuideTranslated(t *testing.T) {
+	if miss := guideCatalog.Missing(); len(miss) > 0 {
+		t.Fatal("not translated:", miss)
+	}
+	if len(guideRussian.AreaText) != len(flashAreas) || len(guideEnglish.AreaText) != len(flashAreas) {
+		t.Fatal("area texts", len(guideEnglish.AreaText), len(guideRussian.AreaText), len(flashAreas))
+	}
+}
+
+// The strip of the data beside the map tells the sectors that hold
+// something other than FF: found out by MD5 on the board, from the bytes
+// of an image
+func TestDataStrip(t *testing.T) {
+	m, w := newTestForm(t)
+	connect(t, m, w)
+	w.Shortcut("Ctrl+2")
+	fs := m.memory.src.(*flashSource)
+	waitFor(t, w, "the scan", func() bool {
+		// What painting the map asks for (the frames are painted before the actions)
+		for _, u := range m.memory.sectorUses() {
+			if u == useUnknown {
+				return false
+			}
+		}
+		return true
+	})
+	use := fs.sectorUses()
+	for addr, want := range map[int]sectorUse{0: useData, 0x8000: useData, 0x10000: useData, 0x9000: useErased, 0x200000: useErased} {
+		if use[addr/pageSize] != want {
+			t.Errorf("0x%X: %d, want %d", addr, use[addr/pageSize], want)
+		}
+	}
+	if tip := m.memory.fmap.tooltipAt(0); !strings.Contains(tip, "data") {
+		t.Error("tooltip:", tip)
+	}
+	shot(t, w, "08-memory-strip")
+
+	// An image: from its bytes
+	data := bytes.Repeat([]byte{0xFF}, 0x10000)
+	data[0x3005] = 1
+	got := imageUses(data)
+	if len(got) != 16 || got[3] != useData || got[2] != useErased {
+		t.Fatalf("image: %v", got)
+	}
+}
+
+// The log has the flashing and every failure, once
+func TestOperationsLog(t *testing.T) {
+	m, w := newTestForm(t)
+	path := filepath.Join(t.TempDir(), "app.bin")
+	data := make([]byte, 64<<10)
+	rand.Read(data)
+	os.WriteFile(path, data, 0o644)
+	m.flash.files = []listFile{{File: ops.File{Path: path, Addr: 0x10000, Size: len(data)}, Enabled: true}}
+	m.flash.reset.SetChecked(false)
+	m.flash.changed()
+	w.Click(m.flash.flashBtn)
+	waitFor(t, w, "flashing", func() bool { return !m.busy && m.flash.bar.Value() == 1 })
+	err := fmt.Errorf("reading at 0x20000: no answer from the chip")
+	m.logOp("Erased the partition x", err)
+	m.showError("Erase", err)
+	w.Settle()
+	if d := w.Top(); d.Form != m.Form {
+		d.Form.Close()
+	}
+	m.showError("Save to file", fmt.Errorf("reading at 0x30000: no answer"))
+	w.Settle()
+	lines, _ := config.Operations()
+	var whats []string
+	for _, l := range lines {
+		whats = append(whats, l.What)
+	}
+	text := strings.Join(whats, "\n")
+	for _, want := range []string{"Flashed app.bin @0x10000", "reading at 0x20000", "Save to file — failed: reading at 0x30000"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %q in the log:\n%s", want, text)
+		}
+	}
+	if n := strings.Count(text, "0x20000"); n != 1 {
+		t.Errorf("logged %d times:\n%s", n, text)
+	}
+}
+
+// A second click soon after the first doesn't cancel the connection, nor
+// disconnect the board just connected; the Connect button of the Memory
+// tab only connects
+func TestClickGuard(t *testing.T) {
+	m, w := newTestForm(t)
+	clickGuard = time.Second
+	w.Click(m.connectBtn)
+	if !m.busy {
+		t.Fatal("not connecting")
+	}
+	m.connect()
+	if m.cancel == nil && m.sess == nil && !m.busy {
+		t.Fatal("the second click cancelled the connection")
+	}
+	waitFor(t, w, "the connection", func() bool { return m.sess != nil && !m.busy })
+	m.connect()
+	if m.sess == nil {
+		t.Fatal("a click at once disconnected the board")
+	}
+	if m.connectBtn.Enabled() {
+		t.Error("the button takes clicks while the state settles")
+	}
+	waitFor(t, w, "the button", func() bool { return m.connectBtn.Enabled() })
+	if m.connectBtn.Text() != "Disconnect" {
+		t.Fatal("button:", m.connectBtn.Text())
+	}
+	// The Memory tab's button doesn't disconnect
+	m.connectOnly()
+	if m.sess == nil {
+		t.Fatal("connectOnly disconnected the board")
+	}
+}
+
+// Read flash asks how and where: in parts, a folder is made in the folder
+// chosen, a build folder; then it offers to open it
+func TestExportDialog(t *testing.T) {
+	m, w := newTestForm(t)
+	connect(t, m, w)
+	dir := t.TempDir()
+	config.Update(func(s *config.Settings) { s.ExportDir = dir })
+	w.Click(m.flash.readBtn)
+	d := w.Dialog()
+	e := m.flash.export
+	if e.kind != ops.ExportWhole || filepath.Dir(e.path.Text()) != dir || !strings.HasSuffix(e.path.Text(), ".bin") {
+		t.Fatal("whole:", e.kind, e.path.Text())
+	}
+	shot(t, d, "22-export")
+	d.Click(e.kinds[2])
+	if e.kind != ops.ExportTrimmed || !strings.HasSuffix(e.path.Text(), "_trimmed.bin") || e.userData.Enabled() {
+		t.Fatal("trimmed:", e.path.Text())
+	}
+	d.Click(e.kinds[1])
+	if e.kind != ops.ExportParts || e.path.Text() != dir || !e.userData.Enabled() || !e.userData.Checked() {
+		t.Fatal("parts:", e.path.Text())
+	}
+	shot(t, d, "23-export-parts")
+	d.Click(d.Find("Save"))
+	waitFor(t, w, "the export", func() bool { return !m.busy && m.flash.bar.Value() == 1 })
+	done := w.Dialog()
+	done.Find("Open the folder")
+	shot(t, done, "24-export-done")
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatal("folders:", entries)
+	}
+	folder := filepath.Join(dir, entries[0].Name())
+	if !strings.HasPrefix(entries[0].Name(), "esp32-c3_") {
+		t.Error("folder name", entries[0].Name())
+	}
+	for _, f := range []string{"flasher_args.json", "flash_args", "bootloader.bin", "partition-table.bin", "factory.bin"} {
+		if _, err := os.Stat(filepath.Join(folder, f)); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// The empty list shows the hint with links; a build folder is chosen by
+// its button as one dropped
+func TestBuildFolderButton(t *testing.T) {
+	m, w := newTestForm(t)
+	if m.flash.list.IsVisible() || !m.flash.emptyBox.IsVisible() {
+		t.Fatal("the empty list doesn't show the hint")
+	}
+	w.Find("Add files…")
+	w.Find("Choose a build folder…")
+	shot(t, w, "03b-empty-list")
+	// A folder saved in parts is a build
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "bootloader.bin"), testBootloader(), 0o644)
+	os.WriteFile(filepath.Join(dir, "flasher_args.json"), []byte(`{"flash_files": {"0x0": "bootloader.bin"}, "extra_esptool_args": {"chip": "esp32c3"}}`), 0o644)
+	m.flash.addPaths([]string{dir})
+	w.Settle()
+	if len(m.flash.files) != 1 || m.flash.files[0].Addr != 0 || !m.flash.list.IsVisible() || m.flash.emptyBox.IsVisible() {
+		t.Fatalf("files %v", m.flash.files)
+	}
+	w.Find("Build folder…")
+}
+
+// The text windows open at a size to read them
+func TestTextDialogSize(t *testing.T) {
+	m, w := newTestForm(t)
+	m.logOp("Erased the whole flash", nil)
+	m.showOperations()
+	d := w.Dialog()
+	if wd, h := d.Form.Size(); wd < 800 || h < 500 {
+		t.Fatalf("size %dx%d", wd, h)
+	}
+	shot(t, d, "25-operations")
 }

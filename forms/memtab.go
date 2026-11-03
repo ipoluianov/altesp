@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ipoluianov/altesp/internal/ops"
@@ -34,10 +35,18 @@ type flashSource struct {
 	want    map[int]bool
 	loading bool
 	failed  bool
+
+	// use tells each sector erased or holding data (see sectorUse), from
+	// the pages read and from the scan by MD5; scanning: the scan runs;
+	// stopped: the source is no longer shown, the scan ends
+	use      []sectorUse
+	scanning bool
+	stopped  atomic.Bool
 }
 
 func newFlashSource(m *MainForm, size int) *flashSource {
-	return &flashSource{m: m, size: size, pages: map[int][]byte{}, want: map[int]bool{}}
+	return &flashSource{m: m, size: size, pages: map[int][]byte{}, want: map[int]bool{},
+		use: make([]sectorUse, (size+pageSize-1)/pageSize)}
 }
 
 func (f *flashSource) Size() int { return f.size }
@@ -77,9 +86,122 @@ func (f *flashSource) put(addr int, data []byte) {
 	defer f.mu.Unlock()
 	for off := 0; off+pageSize <= len(data); off += pageSize {
 		if (addr+off)%pageSize == 0 {
-			f.pages[(addr+off)/pageSize] = data[off : off+pageSize]
+			p := (addr + off) / pageSize
+			f.pages[p] = data[off : off+pageSize]
+			f.markPage(p, f.pages[p])
 		}
 	}
+}
+
+// sectorUse is what a sector of the flash holds, as far as it is known
+type sectorUse int8
+
+const (
+	useUnknown sectorUse = iota
+	useErased
+	useData
+)
+
+// markPage tells the use of a sector by its bytes; f.mu is held
+func (f *flashSource) markPage(p int, data []byte) {
+	if p < len(f.use) {
+		f.use[p] = useOf(data)
+	}
+}
+
+// useOf tells the use of the bytes of a sector
+func useOf(data []byte) sectorUse {
+	for _, b := range data {
+		if b != 0xFF {
+			return useData
+		}
+	}
+	return useErased
+}
+
+// sectorUses is the use of each sector, a copy
+func (f *flashSource) sectorUses() []sectorUse {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sectorUse(nil), f.use...)
+}
+
+// scanBlock is the block whose MD5 is asked first: an erased one tells all
+// its sectors at once, the others are asked sector by sector
+const scanBlock = 0x10000
+
+// scan finds out which sectors hold data by the MD5 the chip computes,
+// without reading the flash over the line: off the UI thread, one question
+// at a time between the other users of the session
+func (f *flashSource) scan() {
+	m := f.m
+	s := m.sess
+	if f.scanning || f.failed || s == nil {
+		return
+	}
+	f.scanning = true
+	go func() {
+		ctx := context.Background()
+		// ask tells whether a region is erased; false when the scan must end
+		ask := func(addr, size int) (erased, ok bool) {
+			m.sessMu.Lock()
+			defer m.sessMu.Unlock()
+			if f.stopped.Load() || m.sess != s {
+				return false, false
+			}
+			erased, err := s.Erased(ctx, uint32(addr), size)
+			return erased, err == nil
+		}
+		set := func(from, n int, u sectorUse) {
+			f.mu.Lock()
+			for p := from; p < from+n && p < len(f.use); p++ {
+				if f.use[p] == useUnknown {
+					f.use[p] = u
+				}
+			}
+			f.mu.Unlock()
+		}
+		known := func(p int) bool {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			return f.use[p] != useUnknown
+		}
+		defer ui.Invoke(func() { f.scanning = false })
+		for a := 0; a < f.size; a += scanBlock {
+			n := min(scanBlock, f.size-a)
+			first, count := a/pageSize, n/pageSize
+			all := true
+			for p := first; p < first+count; p++ {
+				all = all && known(p)
+			}
+			if all {
+				continue
+			}
+			erased, ok := ask(a, n)
+			if !ok {
+				return
+			}
+			if erased {
+				set(first, count, useErased)
+			} else {
+				for p := first; p < first+count; p++ {
+					if known(p) {
+						continue
+					}
+					e, ok := ask(p*pageSize, pageSize)
+					if !ok {
+						return
+					}
+					u := useData
+					if e {
+						u = useErased
+					}
+					set(p, 1, u)
+				}
+			}
+			ui.Invoke(func() { m.memory.fmap.Update() })
+		}
+	}()
 }
 
 // load reads the pages wanted, off the UI thread, while no job runs
@@ -132,6 +254,7 @@ func (f *flashSource) load() {
 			f.mu.Lock()
 			for p, d := range got {
 				f.pages[p] = d
+				f.markPage(p, d)
 				delete(f.want, p)
 			}
 			f.mu.Unlock()
@@ -151,6 +274,28 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// imageUses is the use of each sector of an image
+func imageUses(data []byte) []sectorUse {
+	use := make([]sectorUse, (len(data)+pageSize-1)/pageSize)
+	for p := range use {
+		use[p] = useOf(data[p*pageSize : min(len(data), (p+1)*pageSize)])
+	}
+	return use
+}
+
+// sectorUses is the use of the sectors of what is shown; for the flash of
+// the board it is found out as it is shown
+func (t *MemoryTab) sectorUses() []sectorUse {
+	switch src := t.src.(type) {
+	case *flashSource:
+		src.scan()
+		return src.sectorUses()
+	case imageSource:
+		return t.imageUse
+	}
+	return nil
 }
 
 // imageSource is a file opened without a board: all of it is there
@@ -199,6 +344,9 @@ type MemoryTab struct {
 	diffList *ui.ListView
 	diffs    []ops.Range
 
+	// imageUse is the use of the sectors of the image shown
+	imageUse []sectorUse
+
 	lastFind string
 }
 
@@ -222,7 +370,12 @@ func newMemoryTab(m *MainForm) *MemoryTab {
 	empty.AddWidget(1, 1, t.info)
 	buttons := ui.NewHBox()
 	buttons.SetCellPadding(6)
-	t.connect = textButton(func() string { return T().Connect }, m.connect)
+	t.connect = textButton(func() string {
+		if m.connecting {
+			return T().Connecting
+		}
+		return T().Connect
+	}, m.connectOnly)
 	buttons.Add(t.connect)
 	buttons.Add(textButton(func() string { return T().OpenImage }, m.openImageDialog))
 	buttons.AddStretch()
@@ -312,6 +465,7 @@ func (t *MemoryTab) sync() {
 		switch {
 		case m.image != nil:
 			t.setSource(imageSource{m.image.Data})
+			t.imageUse = imageUses(m.image.Data)
 		case strings.HasPrefix(mode, "board:"):
 			t.setSource(newFlashSource(m, m.board.FlashSize))
 		default:
@@ -322,6 +476,7 @@ func (t *MemoryTab) sync() {
 	t.body.SetVisible(shown)
 	t.empty.SetVisible(!shown)
 	t.connect.SetVisible(mode == "none")
+	t.connect.SetEnabled(!m.busy)
 	switch mode {
 	case "noread":
 		if m.board.SecureDownload {
@@ -343,6 +498,9 @@ func (t *MemoryTab) invalidate() {
 
 // setSource shows the source, keeping the place when it is the same flash
 func (t *MemoryTab) setSource(src hexSource) {
+	if old, ok := t.src.(*flashSource); ok && old != src {
+		old.stopped.Store(true)
+	}
 	top, caret := t.view.TopAddress(), t.view.Caret()
 	_, sameKind := src.(*flashSource)
 	_, wasFlash := t.src.(*flashSource)
@@ -1021,16 +1179,23 @@ func (m *MainForm) runProgress(title, text string, writes bool, work func(ctx co
 }
 
 // flashMap is the strip at the left of the hex view: the whole flash from
-// the top down, colored by partition; the view and the differences on it.
-// A click shows the place.
+// the top down, colored by partition, and beside it the strip of the data:
+// the brighter, the more of its sectors hold something other than FF. The
+// view and the differences are on both. A click shows the place.
 type flashMap struct {
 	ui.Widget
 	t      *MemoryTab
 	mouseY int
 }
 
-// mapWidth is the width of the map
-const mapWidth = 34
+// mapWidth is the width of the map: the partitions, then the data
+const (
+	mapWidth  = 50
+	partWidth = 30
+)
+
+// colorHeat is the color of the sectors with data on the map
+var colorHeat = themeColor{hex("#f0883e"), hex("#d1561a")}
 
 func newFlashMap(t *MemoryTab) *flashMap {
 	f := &flashMap{t: t}
@@ -1079,7 +1244,53 @@ func (f *flashMap) tooltipAt(y int) string {
 	if name := f.t.m.partitionAt(addr); name != "" {
 		text += " · " + name
 	}
+	if use := f.t.sectorUses(); int(addr/pageSize) < len(use) {
+		switch use[addr/pageSize] {
+		case useErased:
+			text += " · " + T().SectorErased
+		case useData:
+			text += " · " + T().SectorData
+		default:
+			text += " · " + T().SectorChecking
+		}
+	}
 	return text
+}
+
+// paintHeat draws the strip of the data: for each line, the share of its
+// sectors that hold data; the sectors not known yet are dim
+func (f *flashMap) paintHeat(cnv *ui.Canvas, x, w, h, size int) {
+	use := f.t.sectorUses()
+	if len(use) == 0 {
+		return
+	}
+	pal := ui.CurrentPalette()
+	heat := colorHeat.get()
+	unknown := mix(pal.Text, pal.Base, 0.1)
+	for y := 0; y < h; y++ {
+		a0 := int64(y) * int64(size) / int64(h)
+		a1 := int64(y+1) * int64(size) / int64(h)
+		s0 := int(a0 / pageSize)
+		s1 := max(s0+1, int((a1+pageSize-1)/pageSize))
+		data, known := 0, 0
+		for p := s0; p < s1 && p < len(use); p++ {
+			switch use[p] {
+			case useData:
+				data++
+				known++
+			case useErased:
+				known++
+			}
+		}
+		switch {
+		case known == 0:
+			if y%4 < 2 {
+				cnv.FillRect(x, y, w, 1, unknown)
+			}
+		case data > 0:
+			cnv.FillRect(x, y, w, 1, mix(heat, pal.Base, 0.35+0.65*float64(data)/float64(known)))
+		}
+	}
 }
 
 // region is a colored part of the map
@@ -1099,8 +1310,9 @@ func (f *flashMap) paint(cnv *ui.Canvas) {
 	y := func(addr uint32) int { return int(int64(addr) * int64(h) / int64(size)) }
 	for _, r := range f.t.m.mapRegions() {
 		y0, y1 := y(r.addr), y(r.addr+r.size)
-		cnv.FillRect(3, y0, w-6, max(1, y1-y0-1), r.color.get())
+		cnv.FillRect(3, y0, partWidth-6, max(1, y1-y0-1), r.color.get())
 	}
+	f.paintHeat(cnv, partWidth, w-partWidth-3, h, size)
 	for _, d := range f.t.diffs {
 		y0 := y(d.Addr)
 		cnv.FillRect(0, y0, w, max(2, y(d.Addr+d.Size)-y0), colorError.get())

@@ -12,6 +12,14 @@ import (
 // showText shows a long text in a dialog: a report, the log of operations.
 // It can be copied and saved; saveName is the file name offered.
 func (m *MainForm) showText(title, text, saveName string) {
+	m.showTextAt(title, text, saveName, false)
+}
+
+// showTextAt is showText; atEnd opens it at the last lines (a log, newest
+// last)
+func (m *MainForm) showTextAt(title, text, saveName string, atEnd bool) {
+	// The title of a menu item ends with "…"
+	title = strings.TrimSuffix(strings.TrimSuffix(title, "…"), "...")
 	c := &ui.DialogContent{}
 	c.InitWidget()
 	box := ui.NewTextBox()
@@ -33,7 +41,16 @@ func (m *MainForm) showText(title, text, saveName string) {
 	})
 	buttons.AddButton(T().CloseDiff, ui.ButtonReject, func() { c.Form().Close() })
 	c.AddWidget(1, 0, buttons)
-	c.OnDialogShow = func() { c.Form().SetTitle(title) }
+	c.OnDialogShow = func() {
+		c.Form().SetTitle(title)
+		// The size of the text, not of the widgets' least: a dialog
+		// sized by them is a line high
+		c.Form().SetSize(900, 560)
+		if atEnd {
+			box.MoveCursorToEnd()
+			box.ScrollToCursor()
+		}
+	}
 	m.Form.Panel().ShowDialog(c)
 }
 
@@ -59,7 +76,9 @@ func (m *MainForm) saveText(title, name, text string) {
 // board it was done on
 func (m *MainForm) logOp(what string, err error) {
 	if err != nil {
-		what += " — " + T().OpFailed + ": " + firstLine(err.Error())
+		// The whole error: where the operation stopped and why
+		what += " — " + T().OpFailed + ": " + err.Error()
+		m.loggedErr = err
 	}
 	mac, port := "", ""
 	if m.hasBoard {
@@ -85,5 +104,5 @@ func (m *MainForm) showOperations() {
 		fmt.Fprintf(&b, "%s  %-17s  %-10s  %s\n", l.Time, l.MAC, l.Port, l.What)
 	}
 	fmt.Fprintf(&b, "\n%s\n", config.OperationsLogPath())
-	m.showText(T().OperationsLog, b.String(), "operations.log")
+	m.showTextAt(T().OperationsLog, b.String(), "operations.log", true)
 }

@@ -22,7 +22,7 @@ The main users are embedded developers, hobbyists and service engineers. The sce
 | Scenario | Who | How it looks in the program |
 | --- | --- | --- |
 | Flash a ready-made firmware | everyone | Port → file(s) → "Flash" |
-| Watch the board's log | everyone | "Monitor" tab, port already selected |
+| Watch the board's log | everyone | "Monitor" button, port already selected |
 | Find out what board this is and what is flashed on it | everyone | "Connect" → chip card and partition list |
 | Back up and restore flash | service | "Read flash" button → file; back again by flashing |
 | Understand the cause of a crash | developer | Monitor + point to the .elf → backtrace decoded |
@@ -95,8 +95,9 @@ Stage 1 covers ESP32, ESP32-S3 and ESP32-C3 (the most common); other families ar
 **Two board states.** Chip information, reading and writing work only in the ROM download mode; the monitor needs the application running. Switching between them is a reset of the board, and the program never does it silently:
 
 - "Connect" resets the board into download mode — the application stops. The button says so in its tooltip.
-- Opening the Monitor does not reset the board: it shows the log of the running application. The "Reset" button is next to it.
-- After flashing, the board is reset into the application (unless turned off), and the monitor, if open, reconnects.
+- The Connect button is also Cancel while an operation runs and Disconnect while connected. For a second after each change it takes no clicks and shows what is going on ("Connecting…"), so a double click or a click again out of impatience doesn't cancel the connection just started nor disconnect the board just connected; F5 is the same. The Connect button of a tab (Memory) only connects.
+- The main window works with the board in download mode; the monitor is a modal window of its own, opened by the "Monitor" button (F6). While it is open the board runs its application and the main window waits; closing it leaves the board running. A board connected in download mode is reset into its application when the monitor opens; one not connected is not reset — its log goes on. The "Reset" button is in the monitor window.
+- After flashing, the board is reset into the application (unless turned off), and the monitor window opens if "Open the monitor after flashing" is on.
 
 **Port reappearance.** With built-in USB (USB-Serial-JTAG, USB OTG) the port disappears and reappears on every reset, and on Windows its COM number may change. The program tracks the board by VID/PID, serial number and USB location, waits for it to come back (with a timeout), and keeps the selection. ESP32-S2 in download mode appears as a different USB device (different PID) and is reset into the application by the watchdog, not by RTS.
 
@@ -110,13 +111,13 @@ Stage 1 covers ESP32, ESP32-S3 and ESP32-C3 (the most common); other families ar
 
 ## Main window
 
-One window, four zones: port and connection on top, board card on the left, tabs on the right, status bar at the bottom. Values in the sketch are examples.
+One window, four zones: port, connection and the monitor button on top, board card on the left, tabs on the right, status bar at the bottom. Values in the sketch are examples.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│ [Port: COM5 · CP2102 ▾]  [Connect]                          [Tools ▾]    │
+│ ⟳ [Port: COM5 · CP2102 ▾]  [Connect]  [Monitor]             [Tools ▾]    │
 ├──────────────────────────────────────────────────────────────────────────┤
-│ ┌───────────────────────┐ [ Flash ] [ Memory ] [ Partitions ] [ Monitor ]│
+│ ┌───────────────────────┐ [ Flash ] [ Memory ] [ Partitions ]            │
 │ │ ESP32-S3 (rev 0.2)    │                                                │
 │ │ MAC 7C:DF:A1:00:12:34 │   File                  Address    Size        │
 │ │ Flash 8MB · PSRAM 8MB │   ──────────────────────────────────────────── │
@@ -136,6 +137,10 @@ One window, four zones: port and connection on top, board card on the left, tabs
 └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+**A break of the line during an operation.** Reading and writing go in chunks (128 KB read, 256 KB written, each ending at a sector boundary). When a chunk breaks — a bad contact, a cable pulled for a moment, noise — the connection is made again by itself: the port is opened anew (a board back under another name is found), the chip reset into download mode, the stub started at the next lower rate (through a bridge; the chip's own USB keeps its rate), and the operation goes on from the chunk that broke; a write is still verified whole. Up to three new connections per operation; then the error names the operation and the address where it stopped. Not over JTAG, and not when the board is put into download mode by hand. The card gets a note about the new connection, and the operations log a line.
+
+A board unplugged while connected is disconnected by itself: its session ends, its entry leaves the port list, the card stays with what was on the board, and the status bar says "The board was unplugged". A bridge's port stays through the resets of the chip, so its going is taken as unplugging at once; the port of a chip's own USB goes on every reset, so it must stay away 2.5 s, and is not taken as unplugged during an operation or within 5 s of a reset by the program. An operation broken by unplugging says so in its error. The monitor window waits for the board to come back instead ("Disconnected, waiting for the board…"). The ⟳ button left of the port list looks for the ports again at once and drops an entry still away.
+
 Outside — the port, the board and "Flash"; everything else is a right click away. Right click on the card — eFuse, security, report; on a file — address, contents, hex. The arrow next to "Flash" — write modes; "Tools" — eFuse, partition table editor, images, coredump.
 
 Basic workflow:
@@ -143,7 +148,7 @@ Basic workflow:
 1. The user plugs in a board. The program notices the new port and selects it itself (if it is the only one).
 2. "Connect" (or automatically on the first action that needs download mode: flashing, reading, erasing) — the board is reset into download mode and the card fills in: chip, MAC, flash, PSRAM, protection status and what is currently flashed.
 3. The user drags in files or a build folder — addresses are filled in automatically.
-4. "Flash" — progress, verification, reset into the application, and optionally an automatic switch to "Monitor".
+4. "Flash" — progress, verification, reset into the application, and optionally the monitor window opened.
 
 A board without firmware to boot is told in the card, in place of "On board:", as information rather than an error: "No firmware" when the bootloader's sector is erased (a new or erased board), "Incomplete firmware" when there is a bootloader but no partition table, or a partition table with no application. The card says what the board does then: without AltEsp connected it restarts over and over (the ROM finds no image and the watchdog resets the chip) — with built-in USB its port keeps disappearing and coming back, through a bridge the monitor repeats "invalid header". The erased sector is told by its MD5, which the ROM, the stub and JTAG all compute, so it works without the stub too. Nothing is told when the flash is encrypted or in Secure Download Mode. The state is checked again after flashing and erasing; the command line prints it as "Firmware:", the JSON as `firmware`.
 
@@ -155,8 +160,8 @@ Four tabs, each solving one task. Only the basic actions are in plain sight; the
 
 ### 1. Flash
 
-- List of files to write: name, address, size, type. Files are added by drag and drop or with the "Add" button.
-- Type is detected by content, not by file name. Bootloader and application images both start with 0xE9; an application is told by the `esp_app_desc` structure (magic 0xABCD5432) and by its segment load addresses. Also recognized: partition table, merged image, NVS and FS images.
+- List of files to write: name, address, size, type. Files are added by drag and drop or with the "Add" button; a build folder by drag and drop or with the "Build folder" button, which takes it as one dropped. While the list is empty it shows the hint with two links: "Add files…" and "Choose a build folder…".
+- Type is detected by content, not by file name. Bootloader and application images both start with 0xE9; an application is told by the `esp_app_desc` structure (magic 0xABCD5432) and by its segment load addresses. Also recognized: partition table, merged image, NVS and FS images. An image without `esp_app_desc` (an application built before ESP-IDF v3.3) is a bootloader only when none of its segments is mapped from the flash. In a build folder the build's own partition table corrects what the content alone can't tell: a file at an app partition is an application, a file at a data partition whose content tells nothing — or tells a partition table, as ESP-AT keeps one in at_customize — is of the partition's subtype (NVS, OTA data, PHY calibration, a file system, data). The kinds are shown in the language of the interface.
 - Address is taken, in order of priority: from the build folder description; for a single application image — from the partition table read from the board (the `factory` or first OTA partition), not a fixed 0x10000; for the bootloader — from the chip table. The partition table offset is configurable in ESP-IDF (`CONFIG_PARTITION_TABLE_OFFSET`) and is never assumed to be 0x8000: on the board it is found by scanning the area after the bootloader.
 - Build folders are recognized by their layout:
   - ESP-IDF: `build/flasher_args.json` — all files and addresses.
@@ -164,6 +169,12 @@ Four tabs, each solving one task. Only the basic actions are in plain sight; the
   - Arduino IDE: an exported merged image, or the separate `.bin` files from the sketch build folder.
 - One big "Flash" button. Checkboxes next to it: "Verify after writing" (on by default), "Reset board after writing" (on).
 - An "Erase all" button.
+- A "Read flash" button opens a dialog: how the firmware is saved and where.
+  - The whole flash, one file.
+  - In parts into a folder (the default path is the folder; a new folder `<chip>_<MAC>_<date>` is made in it, `-2`… if taken): the bootloader, the partition table and the partitions, each a file named after it, with `flasher_args.json` and `flash_args` as an ESP-IDF build, so the folder is flashed back by dropping it on this tab or by `esptool write_flash @flash_args`. The flash settings come from the bootloader header. An application is cut to its image (with its Secure Boot signature block): what is after it doesn't matter to the bootloader. A data partition is saved whole, as a shorter file would leave the old pages of another board after it, and an erased one is left out — but otadata, which tells the slot that boots. An option, on by default: "With the data of the board" — NVS (Wi-Fi passwords, settings), file systems, PHY calibration, coredump and the other data partitions; without it, the firmware alone, to put on other boards.
+  - One file without the erased tail: from 0x0 to the last byte that isn't FF.
+  - The application that boots, alone, cut to its image: for an OTA update.
+  - What is erased is told by the MD5 the chip computes, so the empty parts are not read over the line. With flash encryption on, the dialog warns that the files are ciphertext and fit that chip only. Afterwards the program offers to open the folder.
 - Progress for each file and overall speed.
 - Flash mode, frequency and size override means patching the bootloader image header and recalculating its appended SHA256. A bootloader signed for Secure Boot cannot be patched: the override is refused with an explanation. Verification and "Flash only changed blocks" compare against the image as actually written, after patching.
 
@@ -171,6 +182,7 @@ Four tabs, each solving one task. Only the basic actions are in plain sight; the
 
 - Hex view of the whole flash, loaded as you scroll: only the visible and neighboring blocks are read from the board, read blocks are cached.
 - On the left — a flash map as a strip: colored regions per partition, clicking jumps to the address.
+- Beside it — the strip of the data, a heat map of the flash: each 4 KB sector erased (all FF) or holding data; where a line of the strip covers several sectors, the more of them hold data, the brighter it is. For the board it is found out without reading the flash over the line: the chip computes the MD5 of each 64 KB block, and only the blocks that are not erased are asked sector by sector; the sectors already read for the hex view are taken from their bytes. It starts when the tab is shown and asks between the other operations; the sectors not known yet are dim. For an image it comes from the bytes. The tooltip tells the state of the sector.
 - A "Save flash to file" button (whole size or a region).
 - A "Compare with file" button: differing blocks are highlighted.
 - Byte editing is off by default; it is enabled via the context menu.
@@ -187,9 +199,11 @@ Four tabs, each solving one task. Only the basic actions are in plain sight; the
   - SPIFFS: parameters (page size, block size, object name length, metadata length) are not stored in the image — they are guessed from the common ESP-IDF and Arduino defaults and can be set manually in the context menu.
   - FAT: on top of the ESP-IDF wear-levelling layer (implemented too), and plain FAT without it.
 
-### 4. Monitor
+### Monitor window
 
-- Port terminal: baud rate, line ending, send a line, "Reset" and "Bootloader" buttons. Opening the tab does not reset the board.
+- A modal window over the main one, opened by the "Monitor" button in the top bar (F6); resizable, its size remembered. It is not available for a USB-JTAG entry, which has no log.
+- Port terminal: baud rate, line ending, send a line, "Reset" and "Close" buttons. To return to download mode, the window is closed: the next action of the main window connects.
+- The log is kept between the windows: a new window starts under a line with its time, below the log of the one before; "Clear" empties it.
 - Color highlighting of ESP-IDF log levels (E/W/I/D/V).
 - If an .elf is specified (or found next to the flashed application), panics are decoded into "function — file:line":
   - Xtensa (ESP32, S2, S3): addresses from the `Backtrace:` line.
@@ -197,7 +211,11 @@ Four tabs, each solving one task. Only the basic actions are in plain sight; the
   - The ELF/DWARF decoder and the stack unwinder for both architectures (including Xtensa register windows) are built in; the same unwinder is used for coredump.
 - Pause, search, clear, save log to file.
 
-The monitor and flashing share one port: before flashing the monitor releases the port by itself, and reconnects afterwards (see "Port reappearance").
+The monitor and the main window share one port and never use it at once: the monitor window holds it while open and lets it go when closed.
+
+### The ESP32 guide
+
+The main menu opens "How the ESP32 works": a window of short topics for those who start with the microcontroller, each an animated picture drawn by the program and a few sentences, in the languages of the interface. The topics: inside the chip, flash and RAM, how the board starts (ROM, bootloader, partition table, application, download mode), the flash map and partitions, NVS, OTA, file systems, eFuses, flash encryption and Secure Boot, how the board connects to a computer (a USB-UART bridge or the chip's own USB), the ESP32 family, crashes and their decoding. Where it helps, a topic says where the thing is found in AltEsp. It needs no network and no board.
 
 ## Advanced features via context menus
 
@@ -212,7 +230,7 @@ Rule: an advanced feature lives where the object it relates to is. A right click
 | Row in the partition table | Save partition to file · Write file to partition · Erase partition · Make OTA slot active · Open in hex · Edit partition table… · Export / import CSV |
 | Key in the NVS editor | Change value · Add key / namespace · Delete · Export namespace to CSV · Save NVS image to file |
 | File in the FS browser | Download · Replace · Rename · Delete · Add files / folder · Save FS image · FS parameters (SPIFFS) |
-| Log line in the monitor | Copy · Decode address · Show in hex (for addresses in flash) · Filter by tag / level |
+| Log line in the monitor | Copy · Decode address · Filter by tag / level |
 | Port icon in the status bar | Reset sequence (auto / bridge / USB-JTAG / manual) · Reconnect · Adapter properties (VID/PID, serial number, USB location) |
 
 **"Tools" menu:**
@@ -257,6 +275,7 @@ altesp info   --port COM5
 altesp flash  --port COM5 build/
 altesp flash  --port COM5 0x0 merged.bin
 altesp read   --port COM5 0x0 4MB backup.bin
+altesp read   --port COM5 --parts backups/        (--trimmed file.bin, --app app.bin; --no-data)
 altesp erase  --port COM5
 altesp monitor --port COM5 --elf build/app.elf
 ```
@@ -272,7 +291,7 @@ altesp monitor --port COM5 --elf build/app.elf
 - All settings and history are in `~/.altbins/.altesp` (Windows: `%USERPROFILE%\.altbins\.altesp`). Deleting the folder resets the program.
 - Remembered: last port, recent file sets for flashing (per project folder), .elf path for each project, monitor baud rate, window size.
 - There is almost no settings window as such: parameters are changed where they are used (context menus). "Settings" holds only language, theme, default port baud rate.
-- The log of dangerous operations (erase, eFuse) is stored locally, with date, board MAC and list of changes.
+- The operations log is stored locally, with date, board MAC and port: the operations that change the board (flashing, erasing, partitions, NVS, file systems, eFuse) and what they changed; every failed operation with its whole error, where it stopped and why; and what happened to the connection during an operation, such as a break and a new connection.
 - Light and dark theme, languages as in the whole series (up to 31). Technical terms (eFuse, NVS, OTA) are not translated.
 
 ## Code structure inside the application
@@ -335,6 +354,7 @@ Behavior that documentation does not settle is implemented so that the program f
 - [ ] Connection on Windows and macOS; on Linux with CH340, FTDI, USB-Serial-JTAG, USB OTG: VID/PID, port reappearance after reset, reset sequences.
 - [ ] The READ_FLASH stall: the cause, other chips and adapters, whether resuming is ever needed with 1 KB packets.
 - [ ] "Incomplete firmware" (a bootloader without a partition table, a table without an application) on a real board, and no notice on a working board after the firmware check was added.
+- [ ] Unplugging a connected board on each system: through a bridge and on a chip's own USB (no false disconnect on the resets of flashing, connecting and the monitor).
 - [ ] The monitor opening without a reset on Windows and macOS (DTR and RTS on open), and the burst of resets seen once on Linux.
 - [ ] ROM loader without stub: `READ_FLASH_SLOW` on chips other than ESP32 (works on the ESP32); writing above 16 MB (needs a board with 32 MB flash).
 - [ ] Assumptions of the simulated board used by the tests (`internal/loader/sim.go`): the length of the ROM status on chips other than ESP32, the ROM's error code for an unknown command, the timings of the bridge reset (EN held 100 ms or 500 ms, GPIO0 held 50 ms).
@@ -346,6 +366,7 @@ Behavior that documentation does not settle is implemented so that the program f
 - [ ] Panics and coredumps (`internal/formats/elfdbg`; checked with real Xtensa and RISC-V ELFs and synthetic dumps): a real panic and a real coredump from a board; coredump format versions of ESP-IDF v5.x; binary format details; Xtensa PRSTATUS with a non-zero window base; TCB layouts without DWARF; P4 dual-core dumps and frame-pointer backtraces of ESP-IDF v5.3+. Settled from the ESP-IDF source: the PCs printed on the Xtensa "Backtrace:" line are already adjusted (esp_cpu_process_stack_pc).
 - [ ] Flashing (writing) on real boards of every declared chip but the ESP32, with verification.
 - [ ] The baud rate fallback (checked only against a simulated adapter that loses data above 460800) on a CH340 clone that is unstable at 921600.
+- [ ] A break during an operation: the USB cable pulled for a moment in the middle of flashing and of reading a partition, through a bridge (the new connection itself is checked on the ESP32 with the CP2102 on Nov 3, 2026: 921600 → 460800, then reading and a verified write) and on a chip's own USB.
 - [ ] Encrypted writing (Flash Encryption in development mode) through the stub and the ROM (the fifth FLASH_BEGIN word), and the release-mode detection by DIS_DOWNLOAD_MANUAL_ENCRYPT / DISABLE_DL_ENCRYPT (needs a board that can be sacrificed).
 - [ ] ESP-Prog (`internal/jtag/ftdi`; checked only against its simulator): the FTDI vendor requests on real silicon, the MPSSE bit order for partial bytes, the interface class FF/FF/FF, WinUSB on interface 0 under the composite parent on Windows, the macOS FTDI driver holding the channel, throughput at 5 MHz, pad JTAG of C3/C6/H2 once routed (eFuse/strapping). Steps: `ALTESP_HW_JTAG=1 ALTESP_HW_JTAG_ADAPTER=esp-prog ALTESP_HW_JTAG_CHIP=esp32c3 go test -v -run HW ./internal/jtag/`.
 - [ ] Xtensa probe on ESP32 (ESP-Prog) and ESP32-S3 (USB-JTAG): the IDCODE (0x120034E5 assumed), the number and order of TAPs, NAR/NDR semantics, PWRCTL/PWRSTAT behaviour: `... ALTESP_HW_JTAG_CHIP=esp32 go test -v -run HWXtensaProbe ./internal/jtag/`.

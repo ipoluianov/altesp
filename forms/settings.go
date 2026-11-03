@@ -120,22 +120,17 @@ func (m *MainForm) shortcutList() []shortcut {
 	return []shortcut{
 		{"F5", "F5", func() string { return T().KeyConnect }, m.connect},
 		{"Mod+Enter", "Ctrl+Enter", func() string { return T().FlashBtn }, func() { m.tabs.SetCurrentIndex(tabFlash); m.flash.flash() }},
-		{"Mod+R", "Ctrl+R", func() string { return T().ReadFlash }, func() { m.flash.readFlash(nil) }},
+		{"Mod+R", "Ctrl+R", func() string { return T().ReadFlash }, m.flash.showExport},
 		{"Mod+Shift+R", "Ctrl+Shift+R", func() string { return T().ResetBoard }, m.resetBoard},
 		{"Mod+1", "Ctrl+1", func() string { return T().TabFlash }, tab(tabFlash)},
 		{"Mod+2", "Ctrl+2", func() string { return T().TabMemory }, tab(tabMemory)},
 		{"Mod+3", "Ctrl+3", func() string { return T().TabPartitions }, tab(tabPartitions)},
-		{"Mod+4", "Ctrl+4", func() string { return T().TabMonitor }, tab(tabMonitor)},
+		{"F6", "F6", func() string { return T().MonitorBtn }, m.openMonitor},
 		{"Mod+G", "Ctrl+G", func() string { return T().GoToAddr }, func() {
 			m.tabs.SetCurrentIndex(tabMemory)
 			m.memory.goToDialog()
 		}},
 		{"Mod+F", "Ctrl+F", func() string { return T().KeyFind }, m.find},
-		{"F3", "F3", func() string { return T().FindNext }, func() {
-			if m.tabs.CurrentIndex() == tabMonitor {
-				m.monitor.searchNext(1)
-			}
-		}},
 		{"F1", "F1", func() string { return T().Shortcuts }, m.showShortcuts},
 	}
 }
@@ -146,14 +141,11 @@ func (m *MainForm) shortcuts() {
 	}
 }
 
-// find searches where the tab shows something to search: the bytes of the
-// Memory tab, the log of the monitor
+// find searches the bytes of the Memory tab; the monitor window has a
+// search of its own
 func (m *MainForm) find() {
-	switch m.tabs.CurrentIndex() {
-	case tabMemory:
+	if m.tabs.CurrentIndex() == tabMemory {
 		m.memory.findDialog()
-	case tabMonitor:
-		m.monitor.openSearch()
 	}
 }
 

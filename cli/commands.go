@@ -33,6 +33,10 @@ type opts struct {
 	changed bool
 	jtag    bool
 	encrypt bool
+	// The kinds of read: in parts into a folder, without the erased tail,
+	// the application alone; noData leaves the data of the board out of
+	// the parts
+	parts, trimmed, app, noData bool
 }
 
 // parse reads the options of a command; the rest are its arguments.
@@ -55,6 +59,10 @@ func parse(name string, args []string, e env) (opts, []string, error) {
 	fs.BoolVar(&o.changed, "changed", false, "")
 	fs.BoolVar(&o.jtag, "jtag", false, "")
 	fs.BoolVar(&o.encrypt, "encrypt", false, "")
+	fs.BoolVar(&o.parts, "parts", false, "")
+	fs.BoolVar(&o.trimmed, "trimmed", false, "")
+	fs.BoolVar(&o.app, "app", false, "")
+	fs.BoolVar(&o.noData, "no-data", false, "")
 	var rest []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -345,6 +353,9 @@ func cmdRead(args []string, e env) int {
 	if err != nil {
 		return usageError(e, err)
 	}
+	if o.parts || o.trimmed || o.app {
+		return readExport(o, rest, e)
+	}
 	if len(rest) != 3 {
 		return usageError(e, errors.New("read: give an address, a size and a file"))
 	}
@@ -373,6 +384,59 @@ func cmdRead(args []string, e env) int {
 	}
 	result(e, o, map[string]any{"file": rest[2], "address": addr, "size": len(data)}, func() {
 		fmt.Fprintf(e.stdout, "Read %s from 0x%X into %s\n", ops.SizeText(len(data)), addr, rest[2])
+	})
+	return exitOK
+}
+
+// readExport saves the firmware in parts into a new folder in the one
+// given, or as one file without the erased tail, or the application alone
+func readExport(o opts, rest []string, e env) int {
+	kind := ops.ExportApp
+	switch {
+	case o.parts:
+		kind = ops.ExportParts
+	case o.trimmed:
+		kind = ops.ExportTrimmed
+	}
+	if len(rest) != 1 {
+		return usageError(e, errors.New("read: give the file, or the folder for --parts"))
+	}
+	ctx, stop := interrupted()
+	defer stop()
+	s, err := connect(ctx, o, e)
+	if err != nil {
+		return fail(e, err)
+	}
+	defer s.Close(context.Background(), !o.noReset)
+	pl := &progressLine{w: e.stderr, names: []string{rest[0]}}
+	files, warnings, err := s.Export(ctx, ops.ExportOptions{Kind: kind, UserData: !o.noData}, func(done, total int) { pl.update(0, done, total) })
+	if err != nil {
+		return fail(e, err)
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(e.stderr, "Warning: "+w)
+	}
+	b := s.Board().Summary()
+	name := strings.ToLower(strings.ReplaceAll(b.Chip, " ", "-"))
+	if b.MAC != "" {
+		name += "_" + strings.ReplaceAll(b.MAC, ":", "")
+	}
+	name += "_" + time.Now().Format("2006-01-02")
+	written, err := s.WriteExport(files, kind, rest[0], name)
+	if err != nil {
+		return fail(e, err)
+	}
+	var list []map[string]any
+	total := 0
+	for _, f := range files {
+		list = append(list, map[string]any{"file": f.Name, "address": f.Addr, "size": len(f.Data)})
+		total += len(f.Data)
+	}
+	result(e, o, map[string]any{"written": written, "files": list}, func() {
+		for _, f := range files {
+			fmt.Fprintf(e.stdout, "  0x%06X  %-22s %s\n", f.Addr, f.Name, ops.SizeText(len(f.Data)))
+		}
+		fmt.Fprintf(e.stdout, "Saved %s into %s\n", ops.SizeText(total), written)
 	})
 	return exitOK
 }

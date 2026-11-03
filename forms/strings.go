@@ -8,10 +8,13 @@ import (
 // Strings are the texts of the interface in one language
 type Strings struct {
 	// Top bar
-	PortTip, NoPorts, Connect, ConnectTip string
-	Disconnect, Cancel                    string
-	Tools, MenuTip                        string
-	ManualHint                            string
+	PortTip, NoPorts, Connect, ConnectTip    string
+	RefreshPortsTip, PortsFound              string
+	SectorErased, SectorData, SectorChecking string
+	BoardUnplugged                           string
+	Disconnect, Cancel                       string
+	Tools, MenuTip                           string
+	ManualHint                               string
 
 	// Board card and recent projects
 	Board, NoBoard, NoBoardHint string
@@ -28,7 +31,7 @@ type Strings struct {
 	Copied, Saved, TextFiles, AlreadyDownload                 string
 
 	// Tabs
-	TabFlash, TabMemory, TabPartitions, TabMonitor string
+	TabFlash, TabMemory, TabPartitions string
 
 	// Partition editors (NVS, file systems)
 	WriteToBoard, Changed, DropChanges, DropChangesAsk           string
@@ -61,6 +64,7 @@ type Strings struct {
 	// The log of operations
 	OperationsLog, NoOperations, OpFailed                 string
 	OpEraseAll, OpEraseSectors, OpWriteBytes, OpWritePart string
+	OpFlash, OpNote                                       string
 	OpErasePart, OpOTA, OpTable, OpWriteNVS, OpWriteFS    string
 
 	// eFuse
@@ -83,7 +87,6 @@ type Strings struct {
 	PortBaud, PortBaudPrompt, PortBaudNote, ParamsOverride        string
 	AsInFile, FlashMode, FlashFreq, FlashSizeLabel, ParamsNote    string
 	OverrideShown, EncryptWrite, EncryptNote                      string
-	ShowInHex, ShowInHexAsk, ConnectAndShow, AppAddrAt            string
 	CheckUpdates, CheckUpdatesTitle, CheckingUpdates, UpdateError string
 	UpdateAvailable, OpenReleasePage, UpToDate                    string
 
@@ -119,32 +122,42 @@ type Strings struct {
 	AppELF, AppBoots                                       string
 
 	// Flash tab
-	DropHint, NoPortsHint                       string
-	ColFile, ColAddress, ColSize, ColKind       string
-	KindUnknown, Missing                        string
-	Add, EraseAll, ReadFlash, FlashBtn, Stop    string
-	Verify, ResetAfter, FlashOptions            string
-	OnlyChanged, NoCompress, NoStub, NoStubNext string
-	NoReset, MonitorAfter                       string
-	ChangeAddress, SkipFile, RemoveFile         string
-	AddressTitle, AddressPrompt                 string
-	Firmware, AllFiles, NotABuild, BuildLoaded  string
-	NothingToFlash, Connecting, Writing         string
-	WritingFile, Flashed, PartialWrite          string
-	WarnProblems, FatalProblems                 string
-	Continue, FlashAnyway                       string
-	EraseAsk, EraseUnknown, EraseBootloader     string
-	ErasePartitions, EraseApp, ReadFirst, Erase string
-	Erasing, Erased, Reading, ReadingProgress   string
-	ReadDone                                    string
+	DropHint, NoPortsHint                 string
+	ColFile, ColAddress, ColSize, ColKind string
+	KindUnknown, Missing                  string
+	// Kind is the kind of a file (formats.Kind) in the language
+	Kind                                             func(kind string) string
+	Add, EraseAll, ReadFlash, FlashBtn, Stop         string
+	ReadFlashTitle, ExportWhole, ExportParts         string
+	ExportTrimmed, ExportApp, ExportUserData         string
+	ExportFolderNote, ExportTrimmedNote              string
+	ExportAppNote, ExportEncrypted, ExportDone       string
+	SaveBtn, OpenFolder                              string
+	BuildFolderBtn, BuildFolderTip, BuildFolderTitle string
+	AddFilesLink, BuildFolderLink                    string
+	Verify, ResetAfter, FlashOptions                 string
+	OnlyChanged, NoCompress, NoStub, NoStubNext      string
+	NoReset, MonitorAfter                            string
+	ChangeAddress, SkipFile, RemoveFile              string
+	AddressTitle, AddressPrompt                      string
+	Firmware, AllFiles, NotABuild, BuildLoaded       string
+	NothingToFlash, Connecting, Writing              string
+	WritingFile, Flashed, PartialWrite               string
+	WarnProblems, FatalProblems                      string
+	Continue, FlashAnyway                            string
+	EraseAsk, EraseUnknown, EraseBootloader          string
+	ErasePartitions, EraseApp, ReadFirst, Erase      string
+	Erasing, Erased, Reading, ReadingProgress        string
+	ReadDone                                         string
 
 	// Monitor tab
 	BaudTip, BadBaud, ResetBtn, ResetTip       string
-	BootloaderBtn, BootloaderTip               string
+	MonitorBtn, MonitorTip, MonitorTitle       string
+	CloseMonitorTip, MonSession                string
 	Pause, Resume, Clear, SaveLog              string
 	SendHint, Send, EndingTip, NoEnding        string
 	MonOpening, MonOpen, MonWaiting, MonClosed string
-	MonJTAG, MonDownload, MonNotOpen           string
+	MonJTAG, MonNotOpen                        string
 
 	// Tools menu
 	ToolEfuse, ToolPartitionEditor, ToolImages, ToolCoredump string
@@ -166,15 +179,21 @@ type Strings struct {
 }
 
 var english = Strings{
-	PortTip:    "The port of the board",
-	NoPorts:    "No ports",
-	Connect:    "Connect",
-	ConnectTip: "Reset the board into download mode and read the chip",
-	Tools:      "Tools",
-	MenuTip:    "Menu",
-	Disconnect: "Disconnect",
-	Cancel:     "Cancel",
-	ManualHint: "Put the board into download mode: hold BOOT, press and release RESET, release BOOT",
+	RefreshPortsTip: "Look for the ports again: an unplugged board leaves the list",
+	PortsFound:      "Ports found: %d",
+	SectorErased:    "erased (FF)",
+	SectorData:      "data",
+	SectorChecking:  "being checked",
+	BoardUnplugged:  "The board was unplugged",
+	PortTip:         "The port of the board",
+	NoPorts:         "No ports",
+	Connect:         "Connect",
+	ConnectTip:      "Reset the board into download mode and read the chip",
+	Tools:           "Tools",
+	MenuTip:         "Menu",
+	Disconnect:      "Disconnect",
+	Cancel:          "Cancel",
+	ManualHint:      "Put the board into download mode: hold BOOT, press and release RESET, release BOOT",
 
 	FlashLabel: "Flash",
 	Crystal:    "Crystal",
@@ -199,81 +218,102 @@ var english = Strings{
 	TextFiles:       "Text files",
 	AlreadyDownload: "The board is already in download mode",
 
-	DropHint:        "Drop the firmware files or the build folder here, or press Add…",
-	NoPortsHint:     "No serial ports found: plug in the board with a USB data cable",
-	ColFile:         "File",
-	ColAddress:      "Address",
-	ColSize:         "Size",
-	ColKind:         "Type",
-	KindUnknown:     "Unknown",
-	Missing:         "File not found",
-	Add:             "Add…",
-	EraseAll:        "Erase all",
-	ReadFlash:       "Read flash…",
-	FlashBtn:        "Flash",
-	Stop:            "Stop",
-	Verify:          "Verify after writing",
-	ResetAfter:      "Reset board after writing",
-	FlashOptions:    "Ways of writing",
-	OnlyChanged:     "Flash only changed files",
-	NoCompress:      "No compression",
-	NoStub:          "Without stub loader",
-	NoStubNext:      "Takes effect on the next connection",
-	NoReset:         "Don't reset after writing",
-	MonitorAfter:    "Switch to Monitor after flashing",
-	ChangeAddress:   "Change address…",
-	SkipFile:        "Skip file",
-	RemoveFile:      "Remove from list",
-	AddressTitle:    "Address",
-	AddressPrompt:   "Where to write %s (0x10000, 65536):",
-	Firmware:        "Firmware images",
-	AllFiles:        "All files",
-	NotABuild:       "Not a build folder",
-	BuildLoaded:     "%s build: %d files",
-	NothingToFlash:  "No files to flash: add them or tick them in the list",
-	Connecting:      "Connecting…",
-	Writing:         "Writing…",
-	WritingFile:     "%s (%d of %d) · %d%% · %s",
-	Flashed:         "Written %[2]s in %.1[3]f s",
-	PartialWrite:    "Flashing was stopped. The board may hold a partial write and may not start: flash it again.",
-	WarnProblems:    "Check before writing:",
-	FatalProblems:   "Writing these files would leave the board broken or fail:",
-	Continue:        "Continue",
-	FlashAnyway:     "Flash anyway",
-	EraseAsk:        "Erase the whole flash? This cannot be undone.",
-	EraseUnknown:    "Everything on the flash will be lost: the bootloader, the partition table, the applications and their data.",
-	EraseBootloader: "Lost: the bootloader and the partition table",
-	ErasePartitions: "Partitions:",
-	EraseApp:        "Application:",
-	ReadFirst:       "Read flash to a file first…",
-	Erase:           "Erase",
-	Erasing:         "Erasing the flash… it may take a minute",
-	Erased:          "Flash erased in %.1f s",
-	Reading:         "Reading…",
-	ReadingProgress: "Read %s of %s · %s",
-	ReadDone:        "Saved %s to %s",
+	DropHint:          "Drop the firmware files or the build folder here",
+	BuildFolderBtn:    "Build folder…",
+	BuildFolderTip:    "Choose an ESP-IDF, PlatformIO or Arduino build folder, or one saved in parts",
+	BuildFolderTitle:  "Build folder",
+	AddFilesLink:      "Add files…",
+	BuildFolderLink:   "Choose a build folder…",
+	NoPortsHint:       "No serial ports found: plug in the board with a USB data cable",
+	ColFile:           "File",
+	ColAddress:        "Address",
+	ColSize:           "Size",
+	ColKind:           "Type",
+	KindUnknown:       "Unknown",
+	Kind:              func(k string) string { return k },
+	Missing:           "File not found",
+	Add:               "Add…",
+	EraseAll:          "Erase all",
+	ReadFlash:         "Read flash…",
+	ReadFlashTitle:    "Read flash",
+	ExportWhole:       "The whole flash, one file",
+	ExportParts:       "In parts into a folder: bootloader, partition table, partitions",
+	ExportTrimmed:     "One file without the erased tail",
+	ExportApp:         "The application alone (for OTA)",
+	ExportUserData:    "With the data of the board: NVS (Wi-Fi passwords, settings), file systems, calibration",
+	ExportFolderNote:  "A folder %s is made in it, with flasher_args.json: drop it on the Flash tab to flash it back. Applications are cut to their image; erased data partitions are left out.",
+	ExportTrimmedNote: "From 0x0 to the last byte that isn't FF: flashed at 0x0.",
+	ExportAppNote:     "The application that boots, cut to its image: for an OTA update or its app partition.",
+	ExportEncrypted:   "Flash encryption is on: the files are ciphertext and fit this chip only.",
+	ExportDone:        "Saved %s to %s",
+	SaveBtn:           "Save",
+	OpenFolder:        "Open the folder",
+	FlashBtn:          "Flash",
+	Stop:              "Stop",
+	Verify:            "Verify after writing",
+	ResetAfter:        "Reset board after writing",
+	FlashOptions:      "Ways of writing",
+	OnlyChanged:       "Flash only changed files",
+	NoCompress:        "No compression",
+	NoStub:            "Without stub loader",
+	NoStubNext:        "Takes effect on the next connection",
+	NoReset:           "Don't reset after writing",
+	MonitorAfter:      "Open the monitor after flashing",
+	ChangeAddress:     "Change address…",
+	SkipFile:          "Skip file",
+	RemoveFile:        "Remove from list",
+	AddressTitle:      "Address",
+	AddressPrompt:     "Where to write %s (0x10000, 65536):",
+	Firmware:          "Firmware images",
+	AllFiles:          "All files",
+	NotABuild:         "Not a build folder",
+	BuildLoaded:       "%s build: %d files",
+	NothingToFlash:    "No files to flash: add them or tick them in the list",
+	Connecting:        "Connecting…",
+	Writing:           "Writing…",
+	WritingFile:       "%s (%d of %d) · %d%% · %s",
+	Flashed:           "Written %[2]s in %.1[3]f s",
+	PartialWrite:      "Flashing was stopped. The board may hold a partial write and may not start: flash it again.",
+	WarnProblems:      "Check before writing:",
+	FatalProblems:     "Writing these files would leave the board broken or fail:",
+	Continue:          "Continue",
+	FlashAnyway:       "Flash anyway",
+	EraseAsk:          "Erase the whole flash? This cannot be undone.",
+	EraseUnknown:      "Everything on the flash will be lost: the bootloader, the partition table, the applications and their data.",
+	EraseBootloader:   "Lost: the bootloader and the partition table",
+	ErasePartitions:   "Partitions:",
+	EraseApp:          "Application:",
+	ReadFirst:         "Read flash to a file first…",
+	Erase:             "Erase",
+	Erasing:           "Erasing the flash… it may take a minute",
+	Erased:            "Flash erased in %.1f s",
+	Reading:           "Reading…",
+	ReadingProgress:   "Read %s of %s · %s",
+	ReadDone:          "Saved %s to %s",
 
-	BaudTip:       "Baud rate of the log: choose one or type any number",
-	BadBaud:       "Invalid baud rate",
-	ResetBtn:      "Reset",
-	ResetTip:      "Restart the application of the board",
-	BootloaderBtn: "Bootloader",
-	BootloaderTip: "Reset the board into download mode",
-	Pause:         "Pause",
-	Resume:        "Resume",
-	Clear:         "Clear",
-	SaveLog:       "Save log…",
-	SendHint:      "A line to send to the board",
-	Send:          "Send",
-	EndingTip:     "What is added to the line sent",
-	NoEnding:      "None",
-	MonOpening:    "Opening the port…",
-	MonOpen:       "Open: %s",
-	MonWaiting:    "Disconnected, waiting for the board…",
-	MonClosed:     "The port is closed",
-	MonDownload:   "The board is in download mode: press Disconnect to see its log",
-	MonJTAG:       "USB-JTAG has no log: choose the serial port of the same board to see it",
-	MonNotOpen:    "The monitor is not open",
+	BaudTip:         "Baud rate of the log: choose one or type any number",
+	BadBaud:         "Invalid baud rate",
+	ResetBtn:        "Reset",
+	ResetTip:        "Restart the application of the board",
+	MonitorBtn:      "Monitor",
+	MonitorTip:      "Watch the log of the running board: it is reset into its application",
+	MonitorTitle:    "Monitor · %s",
+	CloseMonitorTip: "Close the monitor: the board goes on running its application",
+	MonSession:      "──── %s ────",
+	Pause:           "Pause",
+	Resume:          "Resume",
+	Clear:           "Clear",
+	SaveLog:         "Save log…",
+	SendHint:        "A line to send to the board",
+	Send:            "Send",
+	EndingTip:       "What is added to the line sent",
+	NoEnding:        "None",
+	MonOpening:      "Opening the port…",
+	MonOpen:         "Open: %s",
+	MonWaiting:      "Disconnected, waiting for the board…",
+	MonClosed:       "The port is closed",
+	MonJTAG:         "USB-JTAG has no log: choose the serial port of the same board to watch it",
+	MonNotOpen:      "The monitor is not open",
 
 	Busy:       "Wait for the operation to finish, or stop it",
 	Stopped:    "Stopped",
@@ -292,7 +332,6 @@ var english = Strings{
 	TabFlash:      "Flash",
 	TabMemory:     "Memory",
 	TabPartitions: "Partitions",
-	TabMonitor:    "Monitor",
 
 	WriteToBoard:    "Write to board",
 	Changed:         "changed",
@@ -397,6 +436,8 @@ var english = Strings{
 	NoOperations:   "No dangerous operations yet",
 	OpFailed:       "failed",
 	OpEraseAll:     "Erased the whole flash",
+	OpFlash:        "Flashed %s",
+	OpNote:         "Note: %s",
 	OpEraseSectors: "Erased %d sector(s) at 0x%X",
 	OpWriteBytes:   "Wrote %d byte(s) at 0x%X",
 	OpWritePart:    "Wrote %s to the partition %s",
@@ -474,10 +515,6 @@ var english = Strings{
 	OverrideShown:     "override:",
 	EncryptWrite:      "Encrypt while writing",
 	EncryptNote:       "The chip encrypts what it writes: the result can't be verified",
-	ShowInHex:         "Show 0x%08X in hex",
-	ShowInHexAsk:      "To find this address in the flash, the board is connected in download mode: it is reset and its log stops. Go on?",
-	ConnectAndShow:    "Connect and show",
-	AppAddrAt:         "0x%08X is at 0x%X in the flash",
 	CheckUpdates:      "Check for updates…",
 	CheckUpdatesTitle: "Updates",
 	CheckingUpdates:   "Asking GitHub for the latest release…",
@@ -606,15 +643,21 @@ var english = Strings{
 }
 
 var russian = Strings{
-	PortTip:    "Порт платы",
-	NoPorts:    "Нет портов",
-	Connect:    "Подключить",
-	ConnectTip: "Перевести плату в режим загрузки и прочитать чип",
-	Tools:      "Инструменты",
-	MenuTip:    "Меню",
-	Disconnect: "Отключить",
-	Cancel:     "Отмена",
-	ManualHint: "Переведите плату в режим загрузки: удерживая BOOT, нажмите и отпустите RESET, затем отпустите BOOT",
+	RefreshPortsTip: "Найти порты заново: отключённая плата уходит из списка",
+	PortsFound:      "Найдено портов: %d",
+	SectorErased:    "пусто (FF)",
+	SectorData:      "данные",
+	SectorChecking:  "проверяется",
+	BoardUnplugged:  "Плата отключена",
+	PortTip:         "Порт платы",
+	NoPorts:         "Нет портов",
+	Connect:         "Подключить",
+	ConnectTip:      "Перевести плату в режим загрузки и прочитать чип",
+	Tools:           "Инструменты",
+	MenuTip:         "Меню",
+	Disconnect:      "Отключить",
+	Cancel:          "Отмена",
+	ManualHint:      "Переведите плату в режим загрузки: удерживая BOOT, нажмите и отпустите RESET, затем отпустите BOOT",
 
 	FlashLabel: "Flash",
 	Crystal:    "Кварц",
@@ -639,81 +682,111 @@ var russian = Strings{
 	TextFiles:       "Текстовые файлы",
 	AlreadyDownload: "Плата уже в режиме загрузки",
 
-	DropHint:        "Перетащите сюда файлы прошивки или папку сборки, или нажмите «Добавить…»",
-	NoPortsHint:     "Последовательные порты не найдены: подключите плату USB-кабелем с данными",
-	ColFile:         "Файл",
-	ColAddress:      "Адрес",
-	ColSize:         "Размер",
-	ColKind:         "Тип",
-	KindUnknown:     "Неизвестно",
-	Missing:         "Файл не найден",
-	Add:             "Добавить…",
-	EraseAll:        "Стереть всё",
-	ReadFlash:       "Прочитать flash…",
-	FlashBtn:        "Прошить",
-	Stop:            "Стоп",
-	Verify:          "Проверить после записи",
-	ResetAfter:      "Перезагрузить плату после записи",
-	FlashOptions:    "Режимы записи",
-	OnlyChanged:     "Прошивать только изменённые файлы",
-	NoCompress:      "Без сжатия",
-	NoStub:          "Без загрузчика-заглушки",
-	NoStubNext:      "Применится при следующем подключении",
-	NoReset:         "Не перезагружать после записи",
-	MonitorAfter:    "Переходить в монитор после прошивки",
-	ChangeAddress:   "Изменить адрес…",
-	SkipFile:        "Пропустить файл",
-	RemoveFile:      "Убрать из списка",
-	AddressTitle:    "Адрес",
-	AddressPrompt:   "Куда записать %s (0x10000, 65536):",
-	Firmware:        "Образы прошивки",
-	AllFiles:        "Все файлы",
-	NotABuild:       "Это не папка сборки",
-	BuildLoaded:     "Сборка %s: файлов — %d",
-	NothingToFlash:  "Нет файлов для прошивки: добавьте их или отметьте в списке",
-	Connecting:      "Подключение…",
-	Writing:         "Запись…",
-	WritingFile:     "%s (%d из %d) · %d%% · %s",
-	Flashed:         "Записано %[2]s за %.1[3]f с",
-	PartialWrite:    "Прошивка остановлена. На плате может остаться недописанный образ, и она может не запуститься: прошейте её заново.",
-	WarnProblems:    "Проверьте перед записью:",
-	FatalProblems:   "Запись этих файлов сломает плату или не удастся:",
-	Continue:        "Продолжить",
-	FlashAnyway:     "Всё равно прошить",
-	EraseAsk:        "Стереть всю flash? Это нельзя отменить.",
-	EraseUnknown:    "Всё содержимое flash будет потеряно: загрузчик, таблица разделов, приложения и их данные.",
-	EraseBootloader: "Будут потеряны: загрузчик и таблица разделов",
-	ErasePartitions: "Разделы:",
-	EraseApp:        "Приложение:",
-	ReadFirst:       "Сначала прочитать flash в файл…",
-	Erase:           "Стереть",
-	Erasing:         "Стирание flash… это может занять минуту",
-	Erased:          "Flash стёрта за %.1f с",
-	Reading:         "Чтение…",
-	ReadingProgress: "Прочитано %s из %s · %s",
-	ReadDone:        "%s сохранено в %s",
+	DropHint:         "Перетащите сюда файлы прошивки или папку сборки",
+	BuildFolderBtn:   "Папка сборки…",
+	BuildFolderTip:   "Выбрать папку сборки ESP-IDF, PlatformIO или Arduino, или сохранённую по частям",
+	BuildFolderTitle: "Папка сборки",
+	AddFilesLink:     "Добавить файлы…",
+	BuildFolderLink:  "Выбрать папку сборки…",
+	NoPortsHint:      "Последовательные порты не найдены: подключите плату USB-кабелем с данными",
+	ColFile:          "Файл",
+	ColAddress:       "Адрес",
+	ColSize:          "Размер",
+	ColKind:          "Тип",
+	KindUnknown:      "Неизвестно",
+	Kind: func(k string) string {
+		if t, ok := map[string]string{
+			"Bootloader": "Загрузчик", "Application": "Приложение", "Partition table": "Таблица разделов",
+			"Merged image": "Объединённый образ", "OTA data": "Данные OTA", "PHY calibration": "Калибровка PHY",
+			"Data": "Данные", "Unknown": "Неизвестно",
+		}[k]; ok {
+			return t
+		}
+		return k
+	},
+	Missing:           "Файл не найден",
+	Add:               "Добавить…",
+	EraseAll:          "Стереть всё",
+	ReadFlash:         "Прочитать flash…",
+	ReadFlashTitle:    "Прочитать flash",
+	ExportWhole:       "Вся flash одним файлом",
+	ExportParts:       "По частям в папку: загрузчик, таблица разделов, разделы",
+	ExportTrimmed:     "Одним файлом без пустого хвоста",
+	ExportApp:         "Только приложение (для OTA)",
+	ExportUserData:    "С данными платы: NVS (пароли Wi-Fi, настройки), файловые системы, калибровка",
+	ExportFolderNote:  "Внутри будет создана папка %s с flasher_args.json: перетащите её на вкладку «Прошивка», чтобы прошить обратно. Приложения обрезаются по размеру образа; пустые разделы данных не сохраняются.",
+	ExportTrimmedNote: "С 0x0 до последнего байта, отличного от FF: прошивается с адреса 0x0.",
+	ExportAppNote:     "Загружаемое приложение, обрезанное по размеру образа: для OTA-обновления или записи в раздел приложения.",
+	ExportEncrypted:   "Включено шифрование flash: файлы зашифрованы и подходят только этому чипу.",
+	ExportDone:        "%s сохранено в %s",
+	SaveBtn:           "Сохранить",
+	OpenFolder:        "Открыть папку",
+	FlashBtn:          "Прошить",
+	Stop:              "Стоп",
+	Verify:            "Проверить после записи",
+	ResetAfter:        "Перезагрузить плату после записи",
+	FlashOptions:      "Режимы записи",
+	OnlyChanged:       "Прошивать только изменённые файлы",
+	NoCompress:        "Без сжатия",
+	NoStub:            "Без загрузчика-заглушки",
+	NoStubNext:        "Применится при следующем подключении",
+	NoReset:           "Не перезагружать после записи",
+	MonitorAfter:      "Открывать монитор после прошивки",
+	ChangeAddress:     "Изменить адрес…",
+	SkipFile:          "Пропустить файл",
+	RemoveFile:        "Убрать из списка",
+	AddressTitle:      "Адрес",
+	AddressPrompt:     "Куда записать %s (0x10000, 65536):",
+	Firmware:          "Образы прошивки",
+	AllFiles:          "Все файлы",
+	NotABuild:         "Это не папка сборки",
+	BuildLoaded:       "Сборка %s: файлов — %d",
+	NothingToFlash:    "Нет файлов для прошивки: добавьте их или отметьте в списке",
+	Connecting:        "Подключение…",
+	Writing:           "Запись…",
+	WritingFile:       "%s (%d из %d) · %d%% · %s",
+	Flashed:           "Записано %[2]s за %.1[3]f с",
+	PartialWrite:      "Прошивка остановлена. На плате может остаться недописанный образ, и она может не запуститься: прошейте её заново.",
+	WarnProblems:      "Проверьте перед записью:",
+	FatalProblems:     "Запись этих файлов сломает плату или не удастся:",
+	Continue:          "Продолжить",
+	FlashAnyway:       "Всё равно прошить",
+	EraseAsk:          "Стереть всю flash? Это нельзя отменить.",
+	EraseUnknown:      "Всё содержимое flash будет потеряно: загрузчик, таблица разделов, приложения и их данные.",
+	EraseBootloader:   "Будут потеряны: загрузчик и таблица разделов",
+	ErasePartitions:   "Разделы:",
+	EraseApp:          "Приложение:",
+	ReadFirst:         "Сначала прочитать flash в файл…",
+	Erase:             "Стереть",
+	Erasing:           "Стирание flash… это может занять минуту",
+	Erased:            "Flash стёрта за %.1f с",
+	Reading:           "Чтение…",
+	ReadingProgress:   "Прочитано %s из %s · %s",
+	ReadDone:          "%s сохранено в %s",
 
-	BaudTip:       "Скорость лога: выберите или введите любое число",
-	BadBaud:       "Неверная скорость",
-	ResetBtn:      "Сброс",
-	ResetTip:      "Перезапустить приложение платы",
-	BootloaderBtn: "Загрузчик",
-	BootloaderTip: "Перевести плату в режим загрузки",
-	Pause:         "Пауза",
-	Resume:        "Продолжить",
-	Clear:         "Очистить",
-	SaveLog:       "Сохранить лог…",
-	SendHint:      "Строка для отправки на плату",
-	Send:          "Отправить",
-	EndingTip:     "Что добавляется к отправляемой строке",
-	NoEnding:      "Ничего",
-	MonOpening:    "Открытие порта…",
-	MonOpen:       "Открыт: %s",
-	MonWaiting:    "Отключено, ожидание платы…",
-	MonClosed:     "Порт закрыт",
-	MonDownload:   "Плата в режиме загрузки: нажмите «Отключить», чтобы увидеть её лог",
-	MonJTAG:       "У USB-JTAG нет лога: выберите последовательный порт той же платы",
-	MonNotOpen:    "Монитор не открыт",
+	BaudTip:         "Скорость лога: выберите или введите любое число",
+	BadBaud:         "Неверная скорость",
+	ResetBtn:        "Сброс",
+	ResetTip:        "Перезапустить приложение платы",
+	MonitorBtn:      "Монитор",
+	MonitorTip:      "Смотреть лог работающей платы: она сбрасывается в своё приложение",
+	MonitorTitle:    "Монитор · %s",
+	CloseMonitorTip: "Закрыть монитор: плата продолжает работать в своём приложении",
+	MonSession:      "──── %s ────",
+	Pause:           "Пауза",
+	Resume:          "Продолжить",
+	Clear:           "Очистить",
+	SaveLog:         "Сохранить лог…",
+	SendHint:        "Строка для отправки на плату",
+	Send:            "Отправить",
+	EndingTip:       "Что добавляется к отправляемой строке",
+	NoEnding:        "Ничего",
+	MonOpening:      "Открытие порта…",
+	MonOpen:         "Открыт: %s",
+	MonWaiting:      "Отключено, ожидание платы…",
+	MonClosed:       "Порт закрыт",
+	MonJTAG:         "У USB-JTAG нет лога: выберите последовательный порт той же платы",
+	MonNotOpen:      "Монитор не открыт",
 
 	Busy:       "Дождитесь окончания операции или остановите её",
 	Stopped:    "Остановлено",
@@ -732,7 +805,6 @@ var russian = Strings{
 	TabFlash:      "Прошивка",
 	TabMemory:     "Память",
 	TabPartitions: "Разделы",
-	TabMonitor:    "Монитор",
 
 	WriteToBoard:    "Записать на плату",
 	Changed:         "изменено",
@@ -837,6 +909,8 @@ var russian = Strings{
 	NoOperations:   "Опасных операций ещё не было",
 	OpFailed:       "ошибка",
 	OpEraseAll:     "Стёрта вся flash",
+	OpFlash:        "Прошито: %s",
+	OpNote:         "Замечание: %s",
 	OpEraseSectors: "Стёрто секторов: %d с 0x%X",
 	OpWriteBytes:   "Записано байтов: %d по адресу 0x%X",
 	OpWritePart:    "Записан %s в раздел %s",
@@ -914,10 +988,6 @@ var russian = Strings{
 	OverrideShown:     "переопределено:",
 	EncryptWrite:      "Шифровать при записи",
 	EncryptNote:       "Чип шифрует то, что записывает: результат нельзя проверить",
-	ShowInHex:         "Показать 0x%08X в hex",
-	ShowInHexAsk:      "Чтобы найти этот адрес во flash, плата подключается в режиме загрузки: она будет сброшена, и её лог остановится. Продолжить?",
-	ConnectAndShow:    "Подключить и показать",
-	AppAddrAt:         "0x%08X находится во flash по адресу 0x%X",
 	CheckUpdates:      "Проверить обновления…",
 	CheckUpdatesTitle: "Обновления",
 	CheckingUpdates:   "Запрос последней версии на GitHub…",
