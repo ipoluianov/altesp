@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"time"
 
@@ -29,6 +31,8 @@ type opts struct {
 	force   bool
 	noVerif bool
 	changed bool
+	jtag    bool
+	encrypt bool
 }
 
 // parse reads the options of a command; the rest are its arguments.
@@ -49,6 +53,8 @@ func parse(name string, args []string, e env) (opts, []string, error) {
 	fs.BoolVar(&o.force, "force", false, "")
 	fs.BoolVar(&o.noVerif, "no-verify", false, "")
 	fs.BoolVar(&o.changed, "changed", false, "")
+	fs.BoolVar(&o.jtag, "jtag", false, "")
+	fs.BoolVar(&o.encrypt, "encrypt", false, "")
 	var rest []string
 	for {
 		if err := fs.Parse(args); err != nil {
@@ -125,14 +131,21 @@ func cmdPorts(args []string, e env) int {
 
 // connect picks the port and connects, telling the steps on stderr
 func connect(ctx context.Context, o opts, e env) (*ops.Session, error) {
-	info, err := ops.PickPort(o.port)
-	if err != nil {
-		return nil, err
-	}
 	status := func(s string) {
 		if !o.json {
 			fmt.Fprintf(e.stderr, "%s...\n", s)
 		}
+	}
+	if o.jtag {
+		d, err := ops.PickJTAG(o.port)
+		if err != nil {
+			return nil, err
+		}
+		return ops.ConnectJTAG(ctx, d, "", status)
+	}
+	info, err := ops.PickPort(o.port)
+	if err != nil {
+		return nil, err
 	}
 	return ops.Connect(ctx, info, ops.Options{
 		Baud: o.baud, NoStub: o.noStub, Status: status,
@@ -178,7 +191,11 @@ func printSummary(w io.Writer, s ops.Summary) {
 	if len(s.Partitions) > 0 {
 		fmt.Fprintln(w, "\nPartitions:")
 		for _, p := range s.Partitions {
-			fmt.Fprintf(w, "  %-16s %-5s %-10s 0x%06X  %s\n", p.Name, p.Type, p.SubType, p.Offset, ops.SizeText(int(p.Size)))
+			mark := ""
+			if p.Active {
+				mark = "  (boots)"
+			}
+			fmt.Fprintf(w, "  %-16s %-5s %-10s 0x%06X  %s%s\n", p.Name, p.Type, p.SubType, p.Offset, ops.SizeText(int(p.Size)), mark)
 		}
 	}
 	if len(s.Apps) > 0 {
@@ -276,7 +293,7 @@ func cmdFlash(args []string, e env) int {
 		names[i] = fmt.Sprintf("%s @0x%X", it.Name, it.Addr)
 	}
 	pl := &progressLine{w: e.stderr, names: names}
-	err = s.Flash(ctx, items, ops.FlashOptions{Verify: !o.noVerif, OnlyChanged: o.changed}, pl.update)
+	err = s.Flash(ctx, items, ops.FlashOptions{Verify: !o.noVerif, OnlyChanged: o.changed, Encrypt: o.encrypt}, pl.update)
 	cerr := s.Close(context.Background(), err == nil && !o.noReset)
 	if err != nil {
 		return fail(e, err)
@@ -410,6 +427,12 @@ func cmdMonitor(args []string, e env) int {
 			return fail(e, err)
 		}
 	}
+	var dec *ops.PanicDecoder
+	if o.elf != "" {
+		if dec, err = ops.NewPanicDecoder(o.elf); err != nil {
+			return fail(e, err)
+		}
+	}
 	fmt.Fprintf(e.stderr, "Monitor on %s, Ctrl+C to quit\n", info.Short)
 	go func() {
 		// The lines typed go to the board
@@ -423,16 +446,86 @@ func cmdMonitor(args []string, e env) int {
 		m.Close()
 	}()
 	buf := make([]byte, 4096)
+	var line []byte
 	for {
 		n, err := m.Read(buf)
 		if n > 0 {
 			e.stdout.Write(buf[:n])
+			if dec != nil {
+				// Whole lines go to the decoder; its frames follow the line
+				line = append(line, buf[:n]...)
+				for {
+					i := bytes.IndexByte(line, '\n')
+					if i < 0 {
+						break
+					}
+					text := ansi.ReplaceAllString(strings.TrimRight(string(line[:i]), "\r"), "")
+					line = line[i+1:]
+					for _, x := range dec.Line(text) {
+						fmt.Fprintln(e.stdout, "    "+x)
+					}
+				}
+			}
 		}
 		if err != nil {
+			if dec != nil {
+				for _, x := range dec.Flush() {
+					fmt.Fprintln(e.stdout, "    "+x)
+				}
+			}
 			if ctx.Err() != nil {
 				return exitOK
 			}
 			return fail(e, err)
 		}
 	}
+}
+
+// ansi are the colour codes of the ESP-IDF log
+var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func cmdCoredump(args []string, e env) int {
+	o, rest, err := parse("coredump", args, e)
+	if err != nil {
+		return usageError(e, err)
+	}
+	var rep *ops.CoredumpReport
+	switch len(rest) {
+	case 1:
+		rep, err = ops.ParseCoredumpFile(rest[0], o.elf)
+	case 0:
+		ctx, stop := interrupted()
+		defer stop()
+		s, cerr := connect(ctx, o, e)
+		if cerr != nil {
+			return fail(e, cerr)
+		}
+		rep, err = s.ReadCoredump(ctx, o.elf)
+		s.Close(context.Background(), !o.noReset)
+	default:
+		return usageError(e, errors.New("coredump: a file, or nothing to read the board's partition"))
+	}
+	if err != nil {
+		return fail(e, err)
+	}
+	result(e, o, rep, func() {
+		fmt.Fprintf(e.stdout, "Coredump %s v%s (%s)\n", rep.Format, rep.Version, rep.Checksum)
+		if rep.ELFMismatch {
+			fmt.Fprintln(e.stdout, "Warning: the .elf is not the one the application was built from")
+		}
+		if rep.Exception != "" {
+			fmt.Fprintln(e.stdout, "Exception: "+rep.Exception)
+		}
+		for _, t := range rep.Tasks {
+			mark := ""
+			if t.Crashed {
+				mark = " (crashed)"
+			}
+			fmt.Fprintf(e.stdout, "\nTask %s%s, %s\n", t.Name, mark, t.State)
+			for _, f := range t.Frames {
+				fmt.Fprintln(e.stdout, "  "+f)
+			}
+		}
+	})
+	return exitOK
 }

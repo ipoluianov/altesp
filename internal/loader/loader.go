@@ -35,6 +35,8 @@ type Loader struct {
 	// encryptWord: the ROM's FLASH_BEGIN takes a fifth word (all chips but
 	// the ESP32)
 	encryptWord bool
+	// encrypting: the write in progress is to be encrypted by the chip
+	encrypting bool
 }
 
 // Options of Connect

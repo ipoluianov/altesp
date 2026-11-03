@@ -47,6 +47,18 @@ type Settings struct {
 	MonitorBaud int `json:"monitor_baud"`
 	// FlashBaud is the baud rate of flashing and reading
 	FlashBaud int `json:"flash_baud"`
+	// MonitorAfterFlash switches to the monitor after a board is flashed
+	// and reset
+	MonitorAfterFlash bool `json:"monitor_after_flash"`
+	// LineEnding is what the send line of the monitor adds: "", "LF",
+	// "CR", "CRLF"
+	LineEnding string `json:"line_ending"`
+	// LastELF is the .elf set by hand last, for a monitor without a
+	// project
+	LastELF string `json:"last_elf,omitempty"`
+	// Resets are the reset sequences chosen by hand, by the device key:
+	// "bridge", "usbjtag", "manual"; a device without one is "auto"
+	Resets map[string]string `json:"resets,omitempty"`
 	// Projects are keyed by the project folder
 	Projects map[string]*Project `json:"projects"`
 }
@@ -66,7 +78,8 @@ var (
 
 func defaults() Settings {
 	return Settings{Projects: map[string]*Project{},
-		MonitorBaud: DefaultMonitorBaud, FlashBaud: DefaultFlashBaud}
+		MonitorBaud: DefaultMonitorBaud, FlashBaud: DefaultFlashBaud,
+		MonitorAfterFlash: true, LineEnding: "LF"}
 }
 
 // Dir is the directory of the settings: ~/.altbins/.altesp

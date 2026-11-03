@@ -1,12 +1,18 @@
 package forms
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/ipoluianov/altesp/app"
 	"github.com/ipoluianov/altesp/config"
 	"github.com/ipoluianov/altesp/install"
+	"github.com/ipoluianov/altesp/internal/ops"
 	"github.com/ipoluianov/nui/ui"
 )
 
@@ -34,9 +40,47 @@ type MainForm struct {
 	connectBtn *ui.Button
 	toolsBtn   *ui.Button
 	menuBtn    *ui.ToolButton
+	manual     *ui.HBox
 
 	tabs      *ui.TabWidget
+	card      *ui.GroupBox
 	recentBox *ui.GroupBox
+	flash     *FlashTab
+	memory    *MemoryTab
+	parts     *PartitionsTab
+	monitor   *MonitorPanel
+
+	// The ports in the list, in its order, and the one selected; the
+	// USB-JTAG devices of the entries named "jtag:<serial>"
+	jtagDevs map[string]ops.JTAGDevice
+	ports    []ops.PortInfo
+	sel      ops.PortInfo
+	hasSel   bool
+	listing  atomic.Bool
+	lastList atomic.Value // the list seen last, as text
+
+	// sess is the board in download mode; board is the card of the board
+	// connected last, kept after the session ends
+	sess     *ops.Session
+	board    ops.Board
+	hasBoard bool
+	// resetAt is when the board was last reset into its application: a
+	// port of its own USB is then away for a moment
+	resetAt time.Time
+
+	// busy: a job runs (see run); cancel stops it
+	busy   bool
+	cancel context.CancelFunc
+
+	// efuse is the eFuse window shown last (for the tests)
+	efuse *efuseView
+	// sessMu is held while the session is used: by a job, or by the
+	// reading of the Memory tab
+	sessMu sync.Mutex
+
+	// image is the file the Memory and Partitions tabs show instead of the
+	// board
+	image *ops.Image
 
 	installStatus install.Status
 }
@@ -55,29 +99,59 @@ func NewMainForm() *MainForm {
 		m.status.AddLink(func() string { return installText(m.installStatus) }, m.onInstallLink)
 	}
 
+	// The port in the status bar opens its menu: the reset sequence, the
+	// adapter
+	m.status.port.SetMouseCursor(ui.MouseCursorPointer)
+	m.status.port.OnMouseDown.Connect(func(e *ui.MouseEvent) {
+		m.showPortMenu()
+		e.Handled = true
+	})
+
 	p := m.Form.Panel()
 	p.SetPanelPadding(0)
 	p.SetCellPadding(0)
 	p.AddWidget(0, 0, m.topBar())
-	p.AddWidget(1, 0, m.center())
-	p.AddWidget(2, 0, m.status)
+	p.AddWidget(1, 0, m.manualBar())
+	p.AddWidget(2, 0, m.center())
+	p.AddWidget(3, 0, m.status)
 
-	m.Form.AddShortcut("F5", m.connect)
-	for i := tabFlash; i <= tabMonitor; i++ {
-		i := i
-		m.Form.AddShortcut("Mod+"+string(rune('1'+i)), func() { m.tabs.SetCurrentIndex(i) })
-	}
+	m.shortcuts()
+	m.Form.SetOnFilesDropped(func(files []string, x, y int) {
+		// Files dropped on a file system go into it
+		if m.tabs.CurrentIndex() == tabPartitions && m.parts.viewer != nil && m.parts.viewer.dropped(files) {
+			return
+		}
+		// A file dropped on Memory or Partitions is an image to look at
+		if i := m.tabs.CurrentIndex(); (i == tabMemory || i == tabPartitions) && len(files) == 1 && !isDir(files[0]) {
+			m.openImage(files[0])
+			return
+		}
+		m.tabs.SetCurrentIndex(tabFlash)
+		m.flash.addPaths(files)
+	})
 
-	m.listPorts()
+	m.listPortsNow()
+	m.status.AddTimer(portPoll, m.listPorts)
 	m.showRecent()
 	m.updateState()
 	// The texts put together are made again in the new language
 	m.Form.OnLanguageChanged.Connect(func(string) {
-		m.listPorts()
+		m.fillPortCombo()
+		m.flash.showNoPorts(len(m.ports) == 0)
+		m.showBoard()
 		m.showRecent()
 		m.updateState()
 	})
 	m.Form.OnClose = func() bool {
+		m.stopJob()
+		m.monitor.stop()
+		if s := m.sess; s != nil {
+			// The board goes back to its application
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			s.Close(ctx, true)
+			cancel()
+		}
+		m.flash.saveProject()
 		config.Save()
 		return true
 	}
@@ -91,12 +165,13 @@ func (m *MainForm) topBar() ui.Widgeter {
 	row.Add(m.menuButton())
 
 	m.portCombo = ui.NewComboBox()
-	m.portCombo.SetMinWidth(260)
+	m.portCombo.SetMinWidth(300)
 	m.portCombo.SetTooltipFunc(func() string { return T().PortTip })
+	m.portCombo.OnActivated.Connect(func(int) { m.portChosen() })
 	row.Add(m.portCombo)
 
 	m.connectBtn = ui.NewButton("")
-	m.connectBtn.SetTextFunc(func() string { return T().Connect })
+	m.connectBtn.SetTextFunc(m.connectText)
 	m.connectBtn.SetMinWidth(120)
 	m.connectBtn.OnClick.Connect(func(ui.Widgeter) { m.connect() })
 	m.connectBtn.SetTooltipFunc(func() string { return T().ConnectTip + " (F5)" })
@@ -113,6 +188,17 @@ func (m *MainForm) topBar() ui.Widgeter {
 	})
 	row.Add(m.toolsBtn)
 	return row
+}
+
+// connectText is the text of the Connect button for the state
+func (m *MainForm) connectText() string {
+	switch {
+	case m.busy:
+		return T().Cancel
+	case m.sess != nil:
+		return T().Disconnect
+	}
+	return T().Connect
 }
 
 // menuButton is the first button of the top bar: the settings of the
@@ -141,49 +227,31 @@ func (m *MainForm) center() ui.Widgeter {
 	left.Add(m.recentBox)
 	left.AddStretch()
 
+	m.flash = newFlashTab(m)
+	m.monitor = newMonitorPanel(m)
+	m.memory = newMemoryTab(m)
+	m.parts = newPartitionsTab(m)
 	m.tabs = ui.NewTabWidget()
-	pages := []struct{ name, hint func() string }{
-		tabFlash:      {func() string { return T().TabFlash }, func() string { return T().HintFlash }},
-		tabMemory:     {func() string { return T().TabMemory }, func() string { return T().HintMemory }},
-		tabPartitions: {func() string { return T().TabPartitions }, func() string { return T().HintPartitions }},
-		tabMonitor:    {func() string { return T().TabMonitor }, func() string { return T().HintMonitor }},
+	pages := []struct {
+		name func() string
+		page ui.Widgeter
+	}{
+		tabFlash:      {func() string { return T().TabFlash }, m.flash},
+		tabMemory:     {func() string { return T().TabMemory }, m.memory},
+		tabPartitions: {func() string { return T().TabPartitions }, m.parts},
+		tabMonitor:    {func() string { return T().TabMonitor }, m.monitor},
 	}
 	for i, pg := range pages {
-		// TODO: the pages of the tabs
-		m.tabs.AddPage(pg.name(), placeholder(pg.hint))
+		m.tabs.AddPage(pg.name(), pg.page)
 		m.tabs.SetPageNameFunc(i, pg.name)
 	}
+	m.tabs.OnCurrentChanged.Connect(func(int) { m.openMonitorIfShown() })
 
 	p := ui.NewPanel()
 	p.SetPanelPadding(8)
 	p.SetCellPadding(8)
 	p.AddWidget(0, 0, left)
 	p.AddWidget(0, 1, m.tabs)
-	return p
-}
-
-// boardCard is the card of the connected board, shown on all the tabs
-func (m *MainForm) boardCard() ui.Widgeter {
-	card := ui.NewGroupBox("")
-	card.SetTitleFunc(func() string { return T().Board })
-	// TODO: the chip, MAC, flash, PSRAM, protection and what is flashed
-	title := ui.NewLabel("")
-	title.SetTextFunc(func() string { return T().NoBoard })
-	title.SetFontBold(true)
-	card.AddWidget(0, 0, title)
-	hint := secondaryLabel(func() string { return T().NoBoardHint })
-	card.AddWidget(1, 0, hint)
-	return card
-}
-
-// placeholder is a page of a tab that only tells what it is for
-func placeholder(hint func() string) ui.Widgeter {
-	p := ui.NewPanel()
-	p.AddVSpacer(0, 1)
-	p.AddHSpacer(1, 0)
-	p.AddWidget(1, 1, secondaryLabel(hint))
-	p.AddHSpacer(1, 2)
-	p.AddVSpacer(2, 1)
 	return p
 }
 
@@ -196,18 +264,8 @@ func secondaryLabel(text func() string) *ui.Label {
 	return l
 }
 
-// listPorts fills the port list. TODO: the ports of the serial package,
-// the one last used selected, a new one selected by itself when it is the
-// only one
-func (m *MainForm) listPorts() {
-	m.portCombo.Clear()
-	m.portCombo.AddItem(T().NoPorts, nil)
-	m.portCombo.SetSelectedIndex(0)
-	m.portCombo.SetEnabled(false)
-}
-
 // showRecent fills the Recent projects box: a folder is shown by its two
-// last names, the whole path in the tooltip
+// last names, the whole path in the tooltip; a click shows its files
 func (m *MainForm) showRecent() {
 	list := ui.NewVBox()
 	folders := config.RecentProjects(maxRecent)
@@ -215,10 +273,20 @@ func (m *MainForm) showRecent() {
 		list.Add(secondaryLabel(func() string { return T().NoProjects }))
 	}
 	for _, f := range folders {
+		f := f
 		l := ui.NewLabel(shortFolder(f))
 		// A long name is cut by the width of the column
 		l.SetXExpandable(true)
 		l.SetTooltip(f)
+		l.SetMouseCursor(ui.MouseCursorPointer)
+		l.OnHoverChanged.Connect(l.SetUnderline)
+		l.OnMouseDown.Connect(func(e *ui.MouseEvent) {
+			if e.Button == ui.MouseButtonLeft {
+				m.tabs.SetCurrentIndex(tabFlash)
+				m.flash.loadRemembered(f)
+				e.Handled = true
+			}
+		})
 		list.Add(l)
 	}
 	m.recentBox.RemoveAllWidgets()
@@ -236,23 +304,98 @@ func shortFolder(path string) string {
 	return parent + "/" + base
 }
 
-// updateState shows the state of the connection in the status bar
-func (m *MainForm) updateState() {
-	// TODO: the port, its speed and the loader once connected
-	m.status.SetState(T().NotConnected, colorLEDOff, "")
+// knownBoard is the board connected last, or the zero Board
+func (m *MainForm) knownBoard() ops.Board {
+	if m.hasBoard {
+		return m.board
+	}
+	return ops.Board{}
 }
 
-// connect resets the board into download mode and reads the chip
-func (m *MainForm) connect() {
-	if m.portCombo.SelectedIndex() < 0 || !m.portCombo.Enabled() {
-		m.status.ShowMessage(T().NoPortSelected)
+// openMonitorIfShown opens the monitor when its tab is shown: a board in
+// download mode is first reset into its application
+func (m *MainForm) openMonitorIfShown() {
+	if m.tabs.CurrentIndex() != tabMonitor || m.busy || m.monitor.active() {
+		m.monitor.showState()
 		return
 	}
-	// TODO: connect through the operations of the program
-	m.status.ShowMessage(T().NotYet)
+	if m.sess != nil {
+		m.disconnect(m.openMonitorIfShown)
+		return
+	}
+	p, ok := m.selectedPort()
+	if !ok || isJTAG(p) {
+		m.monitor.showState()
+		return
+	}
+	m.monitor.open(p, time.Since(m.resetAt) < 5*time.Second)
+}
+
+// updateState shows the state of the board: the buttons, the status bar
+func (m *MainForm) updateState() {
+	m.connectBtn.SetText(m.connectText())
+	m.connectBtn.SetEnabled(m.busy || m.sess != nil || m.hasSel)
+	m.portCombo.SetEnabled(!m.busy && m.sess == nil && len(m.ports) > 0)
+	m.flash.setBusy(m.busy)
+	m.monitor.showState()
+	m.syncViews()
+	if m.busy {
+		// The steps of the job are shown as they come
+		return
+	}
+	m.showStatus()
+}
+
+// showStatus shows in the status bar what the board is connected for
+func (m *MainForm) showStatus() {
+	switch {
+	case m.sess != nil:
+		b := m.board
+		loader := T().ROMLoader
+		switch {
+		case b.JTAG:
+			loader = "JTAG"
+		case b.Stub:
+			loader = T().StubLoader
+		}
+		m.status.SetState(T().Connected, colorOK, portText(b.Port, b.Baud, loader))
+	case m.monitor.stateKind == monOpen:
+		m.status.SetState(T().Monitoring, colorOK, portText(m.monitor.conn.mon.Info, m.monitor.baud(), ""))
+	case m.monitor.stateKind == monWaiting || m.monitor.stateKind == monOpening:
+		m.status.SetState(T().MonWaiting, colorWait, m.sel.Short)
+	case m.hasSel:
+		m.status.SetState(T().NotConnected, colorLEDOff, m.sel.Short)
+	default:
+		m.status.SetState(T().NotConnected, colorLEDOff, "")
+	}
+}
+
+// disconnect resets the board into its application and ends the session;
+// then runs after
+func (m *MainForm) disconnect(then func()) {
+	m.run(false, func(ctx context.Context, s *ops.Session) error {
+		if s == nil {
+			return nil
+		}
+		return s.Close(ctx, true)
+	}, func(err error) {
+		m.setSession(nil)
+		m.resetAt = time.Now()
+		if err != nil && !ctxErr(err) {
+			m.status.ShowMessage(err.Error())
+		}
+		if then != nil {
+			then()
+		}
+	})
 }
 
 // Activate puts the keyboard into the window at the start
 func (m *MainForm) Activate() {
 	m.tabs.Focus()
+}
+
+func isDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
 }

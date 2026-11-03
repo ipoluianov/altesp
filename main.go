@@ -14,6 +14,7 @@ import (
 	"github.com/ipoluianov/altesp/config"
 	"github.com/ipoluianov/altesp/forms"
 	"github.com/ipoluianov/altesp/install"
+	"github.com/ipoluianov/altesp/internal/ops"
 	"github.com/ipoluianov/nui/ui"
 )
 
@@ -43,6 +44,12 @@ func main() {
 	if cli.IsCommand(args) {
 		cli.AttachConsole()
 		os.Exit(cli.Run(args))
+	}
+
+	// The program can be tried without a board: one simulated board is the
+	// only port
+	if os.Getenv("ALTESP_SIMULATE") == "1" {
+		defer ops.SimulateBoard()()
 	}
 
 	config.Load()

@@ -1,0 +1,12 @@
+# udev rules of AltEsp, installed by its .deb and .rpm packages.
+# uaccess gives the user at the seat access to the device without a group.
+
+# Espressif USB-Serial-JTAG (ESP32-C3, C6, H2, S3...): the JTAG interface is
+# opened through usbfs; the serial port is left alone by ModemManager
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+# Espressif USB OTG in download mode (ESP32-S2, S3)
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="0002", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+# Any other Espressif USB device: no modem probing
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="303a", ENV{ID_MM_DEVICE_IGNORE}="1"
+# ESP-Prog (FT2232H): its JTAG channel is opened through usbfs
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6010", MODE="0660", TAG+="uaccess"

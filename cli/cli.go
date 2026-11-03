@@ -19,7 +19,13 @@ const usage = `Usage:
   altesp flash   [--port P] <address> <file> [<address> <file>...]
   altesp read    [--port P] <address> <size> <file>
   altesp erase   [--port P] [<address> <size>]  the whole flash, or a region
-  altesp monitor [--port P] [--elf FILE] [--reset]
+  altesp monitor [--port P] [--elf FILE] [--reset]   panics decoded with the .elf
+  altesp coredump [--port P] [--elf FILE] [<file>]  the board's coredump, or a file
+  altesp efuse   [--port P] [--all]        the eFuses of the chip
+  altesp efuse burn [--port P] FIELD=VALUE... [--confirm BURN]
+                                           shows the plan; burns only with --confirm BURN
+  altesp mcp                               an MCP server on stdin/stdout for AI agents
+  altesp api     [--listen 127.0.0.1:8765] the same tools as a local HTTP API
   altesp version
 
 The port can be omitted when exactly one board is connected.
@@ -34,6 +40,10 @@ Options:
       --no-stub         use only the ROM loader (slower, fewer functions)
       --no-verify       don't compare the flash with the files after writing
       --changed         write only the files that differ from the flash
+      --encrypt         have the chip encrypt what is written (Flash Encryption,
+                        development mode)
+      --jtag            work over the chip's built-in USB-JTAG (ESP32-C3, C6, H2)
+                        instead of the serial loader; --port is then the USB serial number
       --force           flash even when the files don't suit the board
 
 Exit codes: 0 done, 1 failed, 2 wrong command line.
@@ -47,12 +57,13 @@ const (
 )
 
 // commands are the commands of the console; the window has the others
-var commands = []string{"ports", "info", "flash", "read", "erase", "monitor"}
+var commands = []string{"ports", "info", "flash", "read", "erase", "monitor", "coredump", "efuse", "mcp", "api"}
 
 // handlers run the commands
 var handlers = map[string]func(args []string, e env) int{
 	"ports": cmdPorts, "info": cmdInfo, "flash": cmdFlash,
 	"read": cmdRead, "erase": cmdErase, "monitor": cmdMonitor,
+	"coredump": cmdCoredump, "efuse": cmdEFuse, "mcp": cmdMCP, "api": cmdAPI,
 }
 
 // IsCommand tells whether the arguments ask for the command line, not the

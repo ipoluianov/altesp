@@ -1,6 +1,7 @@
 package ops
 
 import (
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -34,6 +35,8 @@ type PartitionLine struct {
 	SubType string `json:"subtype"`
 	Offset  uint32 `json:"offset"`
 	Size    uint32 `json:"size"`
+	// Active: the app partition the bootloader starts
+	Active bool `json:"active,omitempty"`
 }
 
 // AppLine is an application found on the board
@@ -43,6 +46,9 @@ type AppLine struct {
 	Version    string `json:"version"`
 	IDFVersion string `json:"idf_version"`
 	Built      string `json:"built"`
+	// ELFSHA256 is the hash of the .elf the app was built from, in hex
+	ELFSHA256     string `json:"elf_sha256,omitempty"`
+	SecureVersion uint32 `json:"secure_version,omitempty"`
 }
 
 // Summary puts the card into words
@@ -90,8 +96,10 @@ func (b Board) Summary() Summary {
 	if b.Stub {
 		s.Loader = "stub"
 	}
+	active, hasActive := ActivePartition(b.Partitions, b.OTA)
 	for _, p := range b.Partitions {
-		s.Partitions = append(s.Partitions, PartitionLine{p.Name, p.TypeName(), p.SubTypeName(), p.Offset, p.Size})
+		s.Partitions = append(s.Partitions, PartitionLine{p.Name, p.TypeName(), p.SubTypeName(), p.Offset, p.Size,
+			hasActive && p.Name == active.Name})
 	}
 	names := make([]string, 0, len(b.Apps))
 	for n := range b.Apps {
@@ -106,7 +114,8 @@ func (b Board) Summary() Summary {
 			continue
 		}
 		a := img.App
-		s.Apps = append(s.Apps, AppLine{n, a.ProjectName, a.Version, a.IDFVersion, strings.TrimSpace(a.Date + " " + a.Time)})
+		s.Apps = append(s.Apps, AppLine{n, a.ProjectName, a.Version, a.IDFVersion, strings.TrimSpace(a.Date + " " + a.Time),
+			hex.EncodeToString(a.ELFSHA256[:]), a.SecureVersion})
 	}
 	s.Notes = b.Notes
 	return s

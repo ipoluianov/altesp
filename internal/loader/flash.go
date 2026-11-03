@@ -58,12 +58,44 @@ func (l *Loader) flashBlock() int {
 }
 
 // beginWords are the words of FLASH_BEGIN and FLASH_DEFL_BEGIN: the ROM of
-// the chips after the ESP32 takes a fifth one, "encrypted" (0)
+// the chips after the ESP32 takes a fifth one, "encrypted" (0); a write
+// to encrypt passes it as 1, to the stub as well
 func (l *Loader) beginWords(size, blocks, block, addr uint32) []byte {
-	if !l.stub && l.encryptWord {
+	switch {
+	case l.encrypting:
+		return words(size, blocks, block, addr, 1)
+	case !l.stub && l.encryptWord:
 		return words(size, blocks, block, addr, 0)
 	}
 	return words(size, blocks, block, addr)
+}
+
+// encryptAlign is the alignment of the encrypted writes: the flash
+// encryption works on 32-byte blocks
+const encryptAlign = 32
+
+// ErrNoEncryptedWrite is a loader that can't encrypt what it writes: the
+// ESP32's ROM; the stub can
+var ErrNoEncryptedWrite = errors.New("this loader can't encrypt while writing; the stub loader is required")
+
+// WriteFlashEncrypted writes data that the chip encrypts with its flash
+// encryption key as it writes it (Flash Encryption in development mode).
+// The data is padded with 0xFF to 32 bytes; addr must be 32-byte aligned.
+// The flash then holds ciphertext: its MD5 can't be compared with data.
+func (l *Loader) WriteFlashEncrypted(ctx context.Context, addr uint32, data []byte, progress Progress) error {
+	if !l.stub && !l.encryptWord {
+		return ErrNoEncryptedWrite
+	}
+	if addr%encryptAlign != 0 {
+		return fmt.Errorf("an encrypted write must start at a 32-byte boundary, not 0x%X", addr)
+	}
+	if n := len(data) % encryptAlign; n != 0 {
+		data = append(append([]byte(nil), data...), bytes.Repeat([]byte{0xFF}, encryptAlign-n)...)
+	}
+	l.encrypting = true
+	defer func() { l.encrypting = false }()
+	// The ROM can't inflate an encrypted write; the stub can
+	return l.WriteFlash(ctx, addr, data, l.stub, progress)
 }
 
 func (l *Loader) writePlain(ctx context.Context, addr uint32, data []byte, progress Progress) error {

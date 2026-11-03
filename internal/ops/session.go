@@ -11,6 +11,7 @@ import (
 
 	"github.com/ipoluianov/altesp/internal/chips"
 	"github.com/ipoluianov/altesp/internal/formats"
+	"github.com/ipoluianov/altesp/internal/jtag"
 	"github.com/ipoluianov/altesp/internal/loader"
 	"github.com/ipoluianov/altesp/internal/serial"
 )
@@ -39,9 +40,16 @@ type Board struct {
 	PartitionTableAddr uint32
 	// Apps are the applications found in the app partitions, by name
 	Apps map[string]*formats.Image
+	// OTA is what the otadata partition selects
+	OTA formats.OTASelect
 	// CanRead tells whether flash can be read: the stub, or the ROM's
 	// slow read
 	CanRead bool
+	// JTAG: the board is reached over its built-in USB-JTAG
+	JTAG bool
+	// EncryptionRelease: flash encryption is in release mode — the eFuse
+	// that lets the loader encrypt what it writes is burned
+	EncryptionRelease bool
 	// Notes are things the user should know about the board, in words
 	Notes []string
 }
@@ -49,11 +57,17 @@ type Board struct {
 // DefaultFlashSize is assumed when the flash size can't be detected
 const DefaultFlashSize = 4 << 20
 
-// Session is a board in download mode
+// Session is a board in download mode: through the serial loader (l and
+// port), or over JTAG (js); t is the one of them the operations use
 type Session struct {
 	port  serial.Port
 	l     *loader.Loader
+	js    *jtag.Session
+	t     target
 	board Board
+	// segs are the segments of the app at segsOf, for FlashAddrOf
+	segs   []segment
+	segsOf uint32
 }
 
 // Options of Connect
@@ -80,6 +94,43 @@ var openPort = func(info serial.PortInfo) (serial.Port, error) {
 
 // Connect resets the board into download mode and finds out what it is
 func Connect(ctx context.Context, info serial.PortInfo, opt Options) (*Session, error) {
+	baud := opt.Baud
+	if baud <= 0 {
+		baud = DefaultBaud
+	}
+	var failed []int
+	for {
+		opt.Baud = baud
+		s, err := connectOnce(ctx, info, opt)
+		if !errors.Is(err, errBaudUnstable) {
+			if s != nil && len(failed) > 0 {
+				s.board.Notes = append(s.board.Notes, fmt.Sprintf("%v baud was unstable: working at %d", failed, s.board.Baud))
+			}
+			return s, err
+		}
+		failed = append(failed, baud)
+		baud = lowerBaud(baud)
+	}
+}
+
+// fallbackBauds are the rates tried when a faster one is unstable (CH340
+// clones often are at 921600)
+var fallbackBauds = []int{460800, 230400, 115200}
+
+// lowerBaud is the next rate to try below b; the sync rate is the last
+func lowerBaud(b int) int {
+	for _, f := range fallbackBauds {
+		if f < b {
+			return f
+		}
+	}
+	return 115200
+}
+
+// errBaudUnstable is a link that doesn't carry data at the rate set
+var errBaudUnstable = errors.New("the link is unstable at this baud rate")
+
+func connectOnce(ctx context.Context, info serial.PortInfo, opt Options) (*Session, error) {
 	status := opt.Status
 	if status == nil {
 		status = func(string) {}
@@ -94,7 +145,7 @@ func Connect(ctx context.Context, info serial.PortInfo, opt Options) (*Session, 
 		port.Close()
 		return nil, err
 	}
-	s := &Session{port: port, l: l, board: Board{Port: info, Reset: l.Reset(), Baud: l.Baud()}}
+	s := &Session{port: port, l: l, t: l, board: Board{Port: info, Reset: l.Reset(), Baud: l.Baud()}}
 	if err := s.identify(ctx, opt, status); err != nil {
 		s.Close(ctx, false)
 		return nil, err
@@ -201,7 +252,11 @@ func (s *Session) identify(ctx context.Context, opt Options, status func(string)
 		if baud != s.l.Baud() {
 			status(fmt.Sprintf("Switching to %d baud", baud))
 			if err := s.l.ChangeBaud(ctx, baud); err != nil {
-				return err
+				return fmt.Errorf("%w: %v", errBaudUnstable, err)
+			}
+			// A read checks the link both ways at the new rate
+			if _, err := s.l.ReadFlash(ctx, 0, 0x400, nil); err != nil {
+				return fmt.Errorf("%w: %v", errBaudUnstable, err)
 			}
 		}
 	}
@@ -217,6 +272,10 @@ func (s *Session) identify(ctx context.Context, opt Options, status func(string)
 	}
 	if b.Security.FlashEncryption {
 		b.Notes = append(b.Notes, "Flash encryption is on: the flash reads as ciphertext, and a backup can only be restored onto this chip")
+		b.EncryptionRelease = s.encryptionRelease(ctx)
+		if b.EncryptionRelease {
+			b.Notes = append(b.Notes, "Flash encryption is in release mode: the loader can't write images the bootloader accepts")
+		}
 	}
 
 	b.CanRead = b.Stub || s.canReadSlow(ctx)
@@ -262,9 +321,9 @@ const partitionScan = 0x10000
 func (s *Session) readPartitions(ctx context.Context) {
 	b := &s.board
 	size := partitionScan
-	if !b.Stub {
+	if !b.Stub && !b.JTAG {
 		// The ROM reads 64 bytes per command: only the usual place
-		data, err := s.l.ReadFlash(ctx, 0x8000, 0xC00, nil)
+		data, err := s.t.ReadFlash(ctx, 0x8000, 0xC00, nil)
 		if err != nil {
 			return
 		}
@@ -272,7 +331,7 @@ func (s *Session) readPartitions(ctx context.Context) {
 			b.Partitions, b.PartitionTableAddr = parts, 0x8000
 		}
 	} else {
-		data, err := s.l.ReadFlash(ctx, 0, size, nil)
+		data, err := s.t.ReadFlash(ctx, 0, size, nil)
 		if err != nil {
 			return
 		}
@@ -292,7 +351,7 @@ func (s *Session) readPartitions(ctx context.Context) {
 		if !p.IsApp() {
 			continue
 		}
-		head, err := s.l.ReadFlash(ctx, p.Offset, formats.AppHeadSize, nil)
+		head, err := s.t.ReadFlash(ctx, p.Offset, formats.AppHeadSize, nil)
 		if err != nil {
 			continue
 		}
@@ -300,6 +359,7 @@ func (s *Session) readPartitions(ctx context.Context) {
 			b.Apps[p.Name] = img
 		}
 	}
+	s.readOTA(ctx)
 }
 
 // Board returns the card of the board
@@ -310,25 +370,36 @@ func (s *Session) Board() Board { return s.board }
 func (s *Session) Close(ctx context.Context, run bool) error {
 	var err error
 	if run {
-		err = s.l.RunApp(ctx)
+		err = s.t.RunApp(ctx)
 	}
-	if cerr := s.port.Close(); err == nil {
+	var cerr error
+	if s.js != nil {
+		cerr = s.js.Close()
+	} else {
+		cerr = s.port.Close()
+	}
+	if err == nil {
 		err = cerr
 	}
 	return err
 }
 
-// regs lets the chip table read registers through the loader
+// regs lets the chip table read registers through the loader or JTAG
 type regs struct {
 	ctx context.Context
-	l   *loader.Loader
+	l   target
 }
 
 func (r regs) ReadReg(addr uint32) (uint32, error) { return r.l.ReadReg(r.ctx, addr) }
 
 // Baud lets the chip table work out the ESP32's crystal from the divider
 // of its UART (chips.BaudRegs); it is read before the stub starts
-func (r regs) Baud() int { return r.l.Baud() }
+func (r regs) Baud() int {
+	if l, ok := r.l.(*loader.Loader); ok {
+		return l.Baud()
+	}
+	return 0
+}
 func (r regs) WriteReg(addr, value, mask, delayUS uint32) error {
 	return r.l.WriteReg(r.ctx, addr, value, mask, delayUS)
 }

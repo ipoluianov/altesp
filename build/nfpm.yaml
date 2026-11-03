@@ -29,6 +29,10 @@ contents:
     dst: /usr/share/icons/hicolor/256x256/apps/altesp.png
     file_info:
       mode: 0644
+  - src: build/60-altesp.rules
+    dst: /usr/lib/udev/rules.d/60-altesp.rules
+    file_info:
+      mode: 0644
 
 scripts:
   postinstall: build/postinstall.sh

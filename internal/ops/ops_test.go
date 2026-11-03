@@ -3,8 +3,6 @@ package ops
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
@@ -14,77 +12,7 @@ import (
 	"github.com/ipoluianov/altesp/internal/serial"
 )
 
-// partitionTable builds a table as ESP-IDF writes it: 32-byte entries
-// (magic AA 50, type, subtype, offset, size, name, flags), the MD5 entry
-// (EB EB, 14 x FF, the MD5 of the entries) and 0xFF after
-func partitionTable() []byte {
-	entry := func(name string, typ, sub byte, off, size uint32) []byte {
-		e := make([]byte, 32)
-		e[0], e[1], e[2], e[3] = 0xAA, 0x50, typ, sub
-		binary.LittleEndian.PutUint32(e[4:], off)
-		binary.LittleEndian.PutUint32(e[8:], size)
-		copy(e[12:28], name)
-		return e
-	}
-	var t []byte
-	t = append(t, entry("nvs", 1, 0x02, 0x9000, 0x6000)...)
-	t = append(t, entry("phy_init", 1, 0x01, 0xF000, 0x1000)...)
-	t = append(t, entry("factory", 0, 0x00, 0x10000, 0x100000)...)
-	sum := md5.Sum(t)
-	m := make([]byte, 32)
-	m[0], m[1] = 0xEB, 0xEB
-	for i := 2; i < 16; i++ {
-		m[i] = 0xFF
-	}
-	copy(m[16:], sum[:])
-	t = append(t, m...)
-	return append(t, bytes.Repeat([]byte{0xFF}, 0xC00-len(t))...)
-}
-
-// appHead builds the start of an application image (esp_image_header_t,
-// esp_image_segment_header_t, esp_app_desc_t of ESP-IDF esp_app_format.h
-// and esp_app_desc.h) for the chip ID
-func appHead(chipID uint16, project, version string) []byte {
-	h := make([]byte, 0x120)
-	h[0], h[1] = 0xE9, 1                          // magic, one segment
-	binary.LittleEndian.PutUint16(h[12:], chipID) // extended header: chip_id
-	binary.LittleEndian.PutUint16(h[17:], 0xFFFF) // max_chip_rev_full
-	binary.LittleEndian.PutUint32(h[24:], 0x3C000020)
-	binary.LittleEndian.PutUint32(h[28:], 0x100)
-	d := h[32:]
-	binary.LittleEndian.PutUint32(d[0:], 0xABCD5432)
-	copy(d[16:48], version)
-	copy(d[48:80], project)
-	copy(d[80:96], "12:00:00")
-	copy(d[96:112], "Nov  2 2026")
-	copy(d[112:144], "v5.4")
-	return h
-}
-
-// appImage is a whole application image: appHead, the padding and the
-// checksum byte (0xEF XOR the segment data) at the end of a 16-byte block
-func appImage(chipID uint16) []byte {
-	img := appHead(chipID, "app", "1.0")
-	sum := byte(0xEF)
-	for _, b := range img[32:] {
-		sum ^= b
-	}
-	for (len(img)+1)%16 != 0 {
-		img = append(img, 0)
-	}
-	return append(img, sum)
-}
-
-func c3Board() loader.SimBoard {
-	si := make([]byte, 20)
-	binary.LittleEndian.PutUint32(si[12:], 5) // ESP32-C3
-	flash := bytes.Repeat([]byte{0xFF}, 4<<20)
-	copy(flash[0x8000:], partitionTable())
-	copy(flash[0x10000:], appHead(5, "sensor-node", "1.4.2"))
-	return loader.SimBoard{Circuit: loader.ResetUSBJTAG, SecurityInfo: si, EncryptWord: true, Flash: flash}
-}
-
-var c3Port = serial.PortInfo{Name: "/dev/ttyACM0", Short: "ttyACM0", USB: true, VID: 0x303a, PID: 0x1001}
+var c3Port = simPort
 
 // connectSim connects to a simulated board
 func connectSim(t *testing.T, b loader.SimBoard, info serial.PortInfo, opt Options) (*Session, *loader.Sim) {
@@ -281,5 +209,72 @@ func TestPickPort(t *testing.T) {
 	listPorts = func() ([]serial.PortInfo, error) { return []serial.PortInfo{{Name: "/dev/ttyS0"}}, nil }
 	if _, err := PickPort(""); !errors.Is(err, ErrNoBoard) {
 		t.Fatalf("no board: %v", err)
+	}
+}
+
+func TestBaudFallback(t *testing.T) {
+	b := c3Board()
+	b.Circuit = loader.ResetBridge
+	b.MaxBaud = 460800
+	info := serial.PortInfo{Name: "/dev/ttyUSB0", Short: "ttyUSB0", USB: true, VID: 0x1a86, PID: 0x7523}
+	// Every open of the port is the same board powered on again, as a
+	// real port opened anew
+	var sim *loader.Sim
+	old := openPort
+	openPort = func(serial.PortInfo) (serial.Port, error) {
+		sim = loader.NewSim(b)
+		return sim, nil
+	}
+	defer func() { openPort = old }()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := Connect(ctx, info, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close(ctx, false)
+	if s.Board().Baud != 460800 || sim.Baud() != 460800 {
+		t.Fatalf("working at %d (sim %d), want 460800", s.Board().Baud, sim.Baud())
+	}
+	found := false
+	for _, n := range s.Board().Notes {
+		found = found || strings.Contains(n, "921600")
+	}
+	if !found {
+		t.Fatalf("no note about the fallback: %v", s.Board().Notes)
+	}
+}
+
+func TestEncryptedFlash(t *testing.T) {
+	s, sim := connectSim(t, c3Board(), c3Port, Options{})
+	ctx := context.Background()
+	data := []byte("plain firmware that the chip encrypts")
+	if err := s.Flash(ctx, []Item{{Name: "app.bin", Addr: 0x200000, Data: data}}, FlashOptions{Encrypt: true, Verify: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	f := sim.FlashData()
+	for i, c := range data {
+		if f[0x200000+i] != c^0x5A {
+			t.Fatalf("byte %d not written encrypted", i)
+		}
+	}
+	// Padded to 32 bytes with 0xFF (encrypted too)
+	if f[0x200000+len(data)] != 0xFF^0x5A || f[0x200000+64] != 0xFF {
+		t.Fatal("the padding is wrong")
+	}
+	if err := s.Flash(ctx, []Item{{Name: "x", Addr: 0x200010, Data: data}}, FlashOptions{Encrypt: true}, nil); err == nil {
+		t.Fatal("an unaligned encrypted write was taken")
+	}
+	// Check: development mode warns, release mode refuses
+	b := s.Board()
+	b.Security.FlashEncryption = true
+	ps := Check(b, []Item{{Name: "a", Addr: 0x10000, Data: []byte{1}}})
+	if len(ps) == 0 || ps[len(ps)-1].Severity != Warning {
+		t.Fatalf("development mode: %v", ps)
+	}
+	b.EncryptionRelease = true
+	ps = Check(b, []Item{{Name: "a", Addr: 0x10000, Data: []byte{1}}})
+	if len(ps) == 0 || ps[len(ps)-1].Severity != Fatal {
+		t.Fatalf("release mode: %v", ps)
 	}
 }

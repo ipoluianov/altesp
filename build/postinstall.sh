@@ -5,4 +5,8 @@ group=dialout
 getent group uucp >/dev/null 2>&1 && ! getent group dialout >/dev/null 2>&1 && group=uucp
 echo "AltEsp: to open the serial ports without root, add yourself to the group ${group}"
 echo "and log in again:  sudo usermod -aG ${group} \$USER"
+# The udev rules of the boards and JTAG adapters take effect at once
+if command -v udevadm >/dev/null 2>&1; then
+	udevadm control --reload-rules >/dev/null 2>&1 && udevadm trigger >/dev/null 2>&1
+fi
 exit 0

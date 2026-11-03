@@ -37,6 +37,15 @@ type SimBoard struct {
 	AppLog string
 	// NoStub: the stub never says OHAI
 	NoStub bool
+	// MaxBaud makes the line lose what the board sends above this rate, as
+	// an adapter that can't keep up; 0 is no limit
+	MaxBaud int
+	// Regs answers READ_REG and takes WRITE_REG (an eFuse model); nil
+	// reads zeros and ignores the writes
+	Regs interface {
+		ReadReg(addr uint32) (uint32, error)
+		WriteReg(addr, value, mask, delayUS uint32) error
+	}
 	// ReadStallAfter makes READ_FLASH stall after that many packets, as
 	// the stub on an ESP32 did: the acknowledgements are not seen until a
 	// frame of another length comes, which ends the read
@@ -79,6 +88,7 @@ type Sim struct {
 	writeAddr uint32
 	writeSeq  int
 	defl      bool
+	encrypt   bool
 	deflBuf   bytes.Buffer
 	deflLeft  int
 
@@ -178,12 +188,18 @@ func (s *Sim) SetDTR(on bool) error             { return s.setLines(on, s.rtsNow
 func (s *Sim) SetRTS(on bool) error             { return s.setLines(s.dtrNow(), on) }
 func (s *Sim) dtrNow() bool                     { s.mu.Lock(); defer s.mu.Unlock(); return s.dtr }
 func (s *Sim) rtsNow() bool                     { s.mu.Lock(); defer s.mu.Unlock(); return s.rts }
-func (s *Sim) emit(b []byte)                    { s.out.Write(b); s.cond.Broadcast() }
-func (s *Sim) emitPacket(p []byte)              { s.emit(slipEncode(p)) }
-func (s *Sim) io0Low() bool                     { return s.dtr && !s.rts }
-func (s *Sim) enLow() bool                      { return s.rts && !s.dtr }
-func (s *Sim) count(op byte)                    { s.Commands[op]++ }
-func (s *Sim) stubStatus(code uint16) []byte    { return []byte{byte(code >> 8), byte(code)} }
+func (s *Sim) emit(b []byte) {
+	if s.board.MaxBaud > 0 && s.baud > s.board.MaxBaud {
+		return
+	}
+	s.out.Write(b)
+	s.cond.Broadcast()
+}
+func (s *Sim) emitPacket(p []byte)           { s.emit(slipEncode(p)) }
+func (s *Sim) io0Low() bool                  { return s.dtr && !s.rts }
+func (s *Sim) enLow() bool                   { return s.rts && !s.dtr }
+func (s *Sim) count(op byte)                 { s.Commands[op]++ }
+func (s *Sim) stubStatus(code uint16) []byte { return []byte{byte(code >> 8), byte(code)} }
 func (s *Sim) romStatus(ok bool, code byte) []byte {
 	st := make([]byte, s.board.ROMStatusLen)
 	if !ok {
@@ -329,9 +345,19 @@ func (s *Sim) handle(p []byte) {
 		v := uint32(0)
 		if u32(0) == 0x40001000 {
 			v = s.board.Magic
+		} else if s.board.Regs != nil {
+			v, _ = s.board.Regs.ReadReg(u32(0))
 		}
 		s.reply(op, v, nil, true, 0)
-	case opWriteReg, opSPIAttach, opSPISetParams, opChangeBaud, opFlashEnd:
+	case opWriteReg:
+		// addr, value, mask, delay: one or more groups of four words
+		if s.board.Regs != nil {
+			for i := 0; 4*(i+4) <= len(data); i += 4 {
+				s.board.Regs.WriteReg(u32(i), u32(i+1), u32(i+2), u32(i+3))
+			}
+		}
+		s.reply(op, 0, nil, true, 0)
+	case opSPIAttach, opSPISetParams, opChangeBaud, opFlashEnd:
 		s.reply(op, 0, nil, true, 0)
 	case opGetSecurityInfo:
 		if s.board.SecurityInfo == nil {
@@ -370,6 +396,7 @@ func (s *Sim) handle(p []byte) {
 			s.board.Flash[i] = 0xFF
 		}
 		s.writeAddr, s.writeSeq = addr, 0
+		s.encrypt = len(data) == 20 && u32(4) == 1
 		s.defl = op == opFlashDeflBegin
 		s.deflBuf.Reset()
 		s.deflLeft = int(u32(1))
@@ -386,7 +413,7 @@ func (s *Sim) handle(p []byte) {
 		}
 		s.writeSeq++
 		if op == opFlashData {
-			copy(s.board.Flash[s.writeAddr:], block)
+			copy(s.board.Flash[s.writeAddr:], s.cipher(block))
 			s.writeAddr += uint32(len(block))
 		} else {
 			s.deflBuf.Write(block)
@@ -402,7 +429,7 @@ func (s *Sim) handle(p []byte) {
 					s.fail(op, 0x0b)
 					return
 				}
-				copy(s.board.Flash[s.writeAddr:], plain)
+				copy(s.board.Flash[s.writeAddr:], s.cipher(plain))
 			}
 		}
 		s.reply(op, 0, nil, true, 0)
@@ -458,6 +485,19 @@ func (s *Sim) handle(p []byte) {
 	default:
 		s.fail(op, 0x05)
 	}
+}
+
+// cipher stands for the encryption of an encrypted write: the simulated
+// flash holds the data XOR 0x5A
+func (s *Sim) cipher(b []byte) []byte {
+	if !s.encrypt {
+		return b
+	}
+	out := make([]byte, len(b))
+	for i, c := range b {
+		out[i] = c ^ 0x5A
+	}
+	return out
 }
 
 // readNext sends the next READ_FLASH packet; one is in flight at a time,

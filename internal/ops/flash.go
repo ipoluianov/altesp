@@ -79,8 +79,11 @@ func Check(b Board, items []Item) []Problem {
 	if b.SecureDownload {
 		add(Warning, "", "Secure Download Mode: the written data can't be verified")
 	}
-	if b.Security.FlashEncryption {
-		add(Warning, "", "Flash encryption is on: plain images written as they are won't boot")
+	switch {
+	case b.Security.FlashEncryption && b.EncryptionRelease:
+		add(Fatal, "", "Flash encryption is in release mode: the bootloader only runs images encrypted with the chip's key, and the chip doesn't encrypt what is written now — these files won't boot")
+	case b.Security.FlashEncryption:
+		add(Warning, "", "Flash encryption is on: write the images encrypted (\"Encrypt while writing\"), plain ones won't boot")
 	}
 	return ps
 }
@@ -131,6 +134,9 @@ type FlashOptions struct {
 	OnlyChanged bool
 	// NoCompress sends the data as it is
 	NoCompress bool
+	// Encrypt has the chip encrypt the data as it writes it (Flash
+	// Encryption in development mode); the result can't be verified
+	Encrypt bool
 }
 
 // FileProgress tells the progress of the file number index
@@ -145,6 +151,9 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 	// Secure Download Mode has neither compressed writing nor MD5
 	compress := !opt.NoCompress && !b.SecureDownload
 	canMD5 := !b.SecureDownload
+	if opt.Encrypt {
+		return s.flashEncrypted(ctx, items, progress)
+	}
 	for i, it := range items {
 		report := func(done, total int) {
 			if progress != nil {
@@ -153,22 +162,48 @@ func (s *Session) Flash(ctx context.Context, items []Item, opt FlashOptions, pro
 		}
 		want := md5.Sum(it.Data)
 		if opt.OnlyChanged && canMD5 {
-			if got, err := s.l.FlashMD5(ctx, it.Addr, len(it.Data)); err == nil && got == want {
+			if got, err := s.t.FlashMD5(ctx, it.Addr, len(it.Data)); err == nil && got == want {
 				report(len(it.Data), len(it.Data))
 				continue
 			}
 		}
-		if err := s.l.WriteFlash(ctx, it.Addr, it.Data, compress, report); err != nil {
+		err := s.t.WriteFlash(ctx, it.Addr, it.Data, compress, report)
+		if err != nil && s.slowDown(ctx) {
+			// Once more at a lower rate: a block got damaged on the line
+			err = s.t.WriteFlash(ctx, it.Addr, it.Data, compress, report)
+		}
+		if err != nil {
 			return fmt.Errorf("%s: %w", it.Name, err)
 		}
 		if opt.Verify && canMD5 {
-			got, err := s.l.FlashMD5(ctx, it.Addr, len(it.Data))
+			got, err := s.t.FlashMD5(ctx, it.Addr, len(it.Data))
 			if err != nil {
 				return fmt.Errorf("%s: %w", it.Name, err)
 			}
 			if got != want {
 				return fmt.Errorf("%s: %w", it.Name, ErrVerify)
 			}
+		}
+	}
+	return nil
+}
+
+// flashEncrypted writes the files encrypted by the chip
+func (s *Session) flashEncrypted(ctx context.Context, items []Item, progress FileProgress) error {
+	if s.l == nil {
+		return errors.New("encrypted writing needs the serial loader, not JTAG")
+	}
+	if s.board.EncryptionRelease {
+		return errors.New("flash encryption is in release mode: the chip doesn't encrypt what the loader writes")
+	}
+	for i, it := range items {
+		err := s.l.WriteFlashEncrypted(ctx, it.Addr, it.Data, func(done, total int) {
+			if progress != nil {
+				progress(i, done, total)
+			}
+		})
+		if err != nil {
+			return fmt.Errorf("%s: %w", it.Name, err)
 		}
 	}
 	return nil
@@ -182,7 +217,7 @@ func (s *Session) Read(ctx context.Context, addr uint32, size int, progress load
 	if !s.board.CanRead || s.board.SecureDownload {
 		return nil, ErrCantRead
 	}
-	return s.l.ReadFlash(ctx, addr, size, progress)
+	return s.t.ReadFlash(ctx, addr, size, progress)
 }
 
 // EraseAll erases the whole flash. Without the stub the ROM erases it
@@ -192,9 +227,9 @@ func (s *Session) EraseAll(ctx context.Context) error {
 		return errors.New("Secure Download Mode doesn't allow erasing")
 	}
 	if s.board.Stub {
-		return s.l.EraseFlash(ctx)
+		return s.t.EraseFlash(ctx)
 	}
-	return s.l.EraseRegion(ctx, 0, s.board.FlashSize)
+	return s.t.EraseRegion(ctx, 0, s.board.FlashSize)
 }
 
 // Erase erases whole sectors
@@ -202,5 +237,20 @@ func (s *Session) Erase(ctx context.Context, addr uint32, size int) error {
 	if s.board.SecureDownload {
 		return errors.New("Secure Download Mode doesn't allow erasing")
 	}
-	return s.l.EraseRegion(ctx, addr, size)
+	return s.t.EraseRegion(ctx, addr, size)
+}
+
+// slowDown lowers the rate of the serial link after a failed transfer, when
+// a lower one is left; false when the link can't be slowed down
+func (s *Session) slowDown(ctx context.Context) bool {
+	if s.l == nil || !s.board.Stub || builtinUSB(s.board.Port) || s.l.Baud() <= 115200 || ctx.Err() != nil {
+		return false
+	}
+	baud := lowerBaud(s.l.Baud())
+	if err := s.l.ChangeBaud(ctx, baud); err != nil {
+		return false
+	}
+	s.board.Baud = baud
+	s.board.Notes = append(s.board.Notes, fmt.Sprintf("A write failed: the rate is lowered to %d baud", baud))
+	return true
 }
